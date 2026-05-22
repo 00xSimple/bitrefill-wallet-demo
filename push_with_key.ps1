@@ -6,7 +6,7 @@ $KeyPath = "C:\Users\wyb\.ssh\github_deploy_20260522_153640"
 $CommitMessage = "chore: update"
 $Branch = "master"
 $Remote = "origin"
-$RemoteUrl = "https://github.com/00xSimple/bitrefill-wallet-demo.git"
+$RemoteUrl = "git@github.com:00xSimple/bitrefill-wallet-demo.git"
 
 if (!(Test-Path $RepoPath)) { throw "RepoPath 不存在: $RepoPath" }
 if (!(Test-Path $KeyPath)) { throw "KeyPath 不存在: $KeyPath" }
