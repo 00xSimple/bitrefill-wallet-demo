@@ -69,7 +69,7 @@ export default function DashboardPage() {
           <span className="identity-gradient">电商助手</span>
         </h1>
         <p className="mt-3 text-body-lg text-[var(--muted-foreground)] max-w-lg">
-          使用加密货币安全购买礼品卡、手机充值和 eSIM —
+          使用加密货币安全购买数字商品、手机充值和 eSIM —
           覆盖全球180+国家和地区，1500+品牌。
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
@@ -81,7 +81,7 @@ export default function DashboardPage() {
           ) : (
             <Button size="lg" onClick={() => router.push("/products")}>
               <ShoppingBag className="size-4" />
-              浏览礼品卡商店
+              浏览商店
             </Button>
           )}
           <Button
@@ -128,10 +128,10 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between mb-5">
           <div>
             <h2 className="text-title-sm text-[var(--foreground)]">
-              热门礼品卡
+              热门商品
             </h2>
             <p className="text-body-sm text-[var(--muted-foreground)] mt-1">
-              最受欢迎的礼品卡和充值产品
+              最受欢迎的数字商品和充值产品
             </p>
           </div>
           <Button

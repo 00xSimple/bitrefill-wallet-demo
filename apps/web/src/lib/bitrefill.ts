@@ -24,6 +24,7 @@ export interface BitrefillProduct {
     currency: string;
     amount: number;
     value: number;
+    packageId?: string;
   }>;
   imageUrl?: string;
   brand?: string;
@@ -32,20 +33,51 @@ export interface BitrefillProduct {
   deliveryEstimate?: string;
 }
 
+export interface BitrefillInvoiceOrder {
+  id: string;
+  status: string;
+  product: {
+    id: string;
+    name: string;
+    value: string;
+    currency: string;
+    image?: string;
+  };
+  createdAt: string;
+  deliveredAt: string | null;
+}
+
 export interface BitrefillInvoice {
   id: string;
-  status: "pending" | "paid" | "delivered" | "expired" | "failed";
+  status: "not_delivered" | "all_error" | "delivered" | "complete" | "expired";
   productId: string;
   productName: string;
+  productValue?: string;
+  productCurrency?: string;
+  productImage?: string;
   amount: number;
   currency: string;
   paymentMethod: string;
   paymentAddress?: string;
   paymentAmount?: string;
   paymentCurrency?: string;
+  paymentStatus?: string;
   createdAt: string;
+  completedAt?: string;
   expiresAt?: string;
+  orderIds: string[];
+  orders: BitrefillInvoiceOrder[];
   deliveryDetails?: {
+    code?: string;
+    instructions?: string;
+    pin?: string;
+  };
+}
+
+export interface BitrefillOrder {
+  id: string;
+  status: string;
+  redemptionInfo?: {
     code?: string;
     instructions?: string;
     pin?: string;
@@ -60,6 +92,7 @@ export interface BitrefillCategory {
 }
 
 export const PAYMENT_METHODS: Record<string, string> = {
+  BALANCE: "balance",
   ETHEREUM: "ethereum",
   TRON: "tron",
   BITCOIN: "bitcoin",
@@ -72,20 +105,45 @@ export type BitrefillPaymentMethod = keyof typeof PAYMENT_METHODS;
 // ---- Data mapping ----
 
 function mapInvoice(raw: any): BitrefillInvoice {
-  const firstProduct = Array.isArray(raw.products) ? raw.products[0] : null;
+  const payment = raw.payment || {};
+  const rawOrders: any[] = Array.isArray(raw.orders) ? raw.orders : [];
+  const firstOrder = rawOrders[0];
+  const firstProduct = firstOrder?.product;
+
+  const mappedOrders: BitrefillInvoiceOrder[] = rawOrders.map((o: any) => ({
+    id: o.id || o,
+    status: o.status || "created",
+    product: {
+      id: o.product?.id || "",
+      name: o.product?.name || "",
+      value: o.product?.value || "",
+      currency: o.product?.currency || "",
+      image: o.product?.image,
+    },
+    createdAt: o.created_time || o.createdAt || "",
+    deliveredAt: o.delivered_time ?? o.deliveredAt ?? null,
+  }));
+
   return {
     id: raw.id,
-    status: raw.status || "pending",
-    productId: raw.product_id || firstProduct?.product_id || raw.productId || "",
-    productName: raw.product_name || raw.productName || firstProduct?.name || "",
-    amount: raw.amount ?? firstProduct?.amount ?? 0,
-    currency: raw.currency || firstProduct?.currency || "CNY",
-    paymentMethod: raw.payment_method || raw.paymentMethod || "ethereum",
-    paymentAddress: raw.payment_address || raw.paymentAddress || "",
-    paymentAmount: raw.payment_amount || raw.paymentAmount || "",
-    paymentCurrency: raw.payment_currency || raw.paymentCurrency || "",
-    createdAt: raw.created_at || raw.createdAt || new Date().toISOString(),
+    status: raw.status || "not_delivered",
+    productId: firstProduct?.id || raw.product_id || raw.productId || "",
+    productName: firstProduct?.name || raw.product_name || raw.productName || "",
+    productValue: firstProduct?.value,
+    productCurrency: firstProduct?.currency,
+    productImage: firstProduct?.image,
+    amount: payment.price ?? raw.amount ?? 0,
+    currency: firstProduct?.currency || payment.currency || "USD",
+    paymentMethod: payment.method || raw.payment_method || raw.paymentMethod || "",
+    paymentAddress: payment.address || raw.payment_address || raw.paymentAddress || "",
+    paymentAmount: payment.price != null ? String(payment.price) : (raw.payment_amount || raw.paymentAmount || ""),
+    paymentCurrency: payment.currency || raw.payment_currency || raw.paymentCurrency || "",
+    paymentStatus: payment.status || "",
+    createdAt: raw.created_time || raw.createdAt || new Date().toISOString(),
+    completedAt: raw.completed_time || raw.completedAt || undefined,
     expiresAt: raw.expires_at || raw.expiresAt || "",
+    orderIds: mappedOrders.map((o) => o.id),
+    orders: mappedOrders,
     deliveryDetails: raw.delivery_details || raw.deliveryDetails
       ? {
           code: raw.delivery_details?.code || raw.deliveryDetails?.code || "",
@@ -118,6 +176,7 @@ function mapProduct(raw: any): BitrefillProduct {
       currency: "CNY",
       amount: p.amount ?? 0,
       value: Number(p.value) || p.amount || 0,
+      packageId: p.package_id || undefined,
     })),
     imageUrl: raw.id
       ? `https://cdn.bitrefill.com/primg/w720h432/${raw.id}.webp`
@@ -173,7 +232,6 @@ class BitrefillClient {
     if (params?.start != null) qs.set("start", String(params.start));
     const query = qs.toString();
     const result = await this.request<any>(`/products${query ? `?${query}` : ""}`);
-    // Normalize response: API may return array, { products }, or { data }
     if (Array.isArray(result)) {
       return { products: result.map(mapProduct), total: result.length };
     }
@@ -208,6 +266,17 @@ class BitrefillClient {
     return this.request("/countries");
   }
 
+  // ---- Account ----
+
+  async getAccountBalance(): Promise<{ balance: number; currency: string }> {
+    const result = await this.request<any>("/accounts/balance");
+    const data = result.data ?? result;
+    return {
+      balance: Number(data.balance) || 0,
+      currency: data.currency || "USD",
+    };
+  }
+
   // ---- Invoices / Payments ----
 
   async createInvoice(params: {
@@ -216,11 +285,18 @@ class BitrefillClient {
     paymentMethod: string;
     email?: string;
     phone?: string;
+    packageId?: string;
+    autoPay?: boolean;
   }): Promise<BitrefillInvoice> {
     const productEntry: Record<string, unknown> = {
       product_id: params.productId,
-      value: params.denomination,
+      quantity: 1,
     };
+    if (params.packageId) {
+      productEntry.package_id = params.packageId;
+    } else if (params.denomination) {
+      productEntry.value = params.denomination;
+    }
     if (params.phone) productEntry.phone_number = params.phone;
 
     const body: Record<string, unknown> = {
@@ -228,6 +304,7 @@ class BitrefillClient {
       payment_method: params.paymentMethod,
     };
     if (params.email) body.email = params.email;
+    if (params.autoPay) body.auto_pay = true;
 
     const result = await this.request<any>("/invoices", {
       method: "POST",
@@ -256,6 +333,24 @@ class BitrefillClient {
     return {
       invoices: raw.map(mapInvoice),
       total: result.total ?? result.meta?.total ?? raw.length,
+    };
+  }
+
+  // ---- Orders / Redemption ----
+
+  async getOrder(orderId: string): Promise<BitrefillOrder> {
+    const result = await this.request<any>(`/orders/${orderId}`);
+    const data = result.data ?? result;
+    return {
+      id: data.id || orderId,
+      status: data.status || "",
+      redemptionInfo: data.redemption_info
+        ? {
+            code: data.redemption_info.code || "",
+            instructions: data.redemption_info.instructions || "",
+            pin: data.redemption_info.pin || "",
+          }
+        : undefined,
     };
   }
 

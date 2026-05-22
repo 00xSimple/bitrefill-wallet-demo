@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   Button,
   Badge,
   Input,
   SectionPanel,
+  Skeleton,
   useToast,
 } from "@repo/ui";
 import {
@@ -13,7 +14,8 @@ import {
   Wallet,
   Trash2,
   ShoppingCart,
-  ArrowRight,
+  CreditCard,
+  Coins,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCartStore, useOrderStore, useWalletStore } from "@/lib/store";
@@ -33,12 +35,32 @@ export default function CartPage() {
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("ethereum");
+  const [paymentMethod, setPaymentMethod] = useState("balance");
+  const [balance, setBalance] = useState<{ amount: number; currency: string } | null>(null);
+  const [loadingBalance, setLoadingBalance] = useState(false);
+
+  // Load balance when balance payment is selected
+  useEffect(() => {
+    if (paymentMethod !== "balance") {
+      setBalance(null);
+      return;
+    }
+    setLoadingBalance(true);
+    const client = getBitrefillClient();
+    client
+      .getAccountBalance()
+      .then((b) => setBalance({ amount: b.balance, currency: b.currency }))
+      .catch(() => setBalance(null))
+      .finally(() => setLoadingBalance(false));
+  }, [paymentMethod]);
 
   const chainPaymentMethod =
     selectedAccount && PAYMENT_METHODS[selectedAccount.chain]
       ? PAYMENT_METHODS[selectedAccount.chain]
       : "ethereum";
+
+  const isBalancePayment = paymentMethod === "balance";
+  const isCryptoPayment = !isBalancePayment;
 
   const handleCheckout = useCallback(async () => {
     if (items.length === 0) {
@@ -59,9 +81,11 @@ export default function CartPage() {
         const invoice = await client.createInvoice({
           productId: item.product.id,
           denomination: denom.value || denom.amount,
+          packageId: denom.packageId,
           paymentMethod: method,
           email: email || undefined,
           phone: phone || undefined,
+          autoPay: isBalancePayment,
         });
         addOrder(invoice);
         createdCount++;
@@ -78,14 +102,14 @@ export default function CartPage() {
       clearCart();
       toast({
         title: `${createdCount} 个订单已创建`,
-        description: "正在跳转到订单页面",
+        description: isBalancePayment ? "余额支付已完成，正在跳转" : "请完成支付以获取商品",
         variant: "success",
       });
       router.push("/orders");
     }
 
     setCreatingInvoice(false);
-  }, [items, paymentMethod, chainPaymentMethod, email, selectedAccount, addOrder, clearCart, toast, router]);
+  }, [items, paymentMethod, chainPaymentMethod, isBalancePayment, email, selectedAccount, addOrder, clearCart, toast, router]);
 
   const totalAmount = items.reduce(
     (sum, it) =>
@@ -112,7 +136,7 @@ export default function CartPage() {
           <ShoppingCart className="size-12 text-[var(--muted-foreground)] mx-auto mb-4" />
           <p className="text-body-lg font-semibold text-[var(--foreground)]">购物车为空</p>
           <p className="text-body-sm text-[var(--muted-foreground)] mt-2 mb-4">
-            去礼品卡商店选购你喜欢的商品
+            去商店选购你喜欢的商品
           </p>
           <Button onClick={() => router.push("/products")}>
             <ShoppingBag className="size-4" />
@@ -217,15 +241,34 @@ export default function CartPage() {
               onChange={(e) => setPaymentMethod(e.target.value)}
               className="w-full h-10 px-3 rounded-xl border border-[var(--border)] bg-[var(--surface-page)] text-sm text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
             >
-              {Object.entries(PAYMENT_METHODS).map(([chain, method]) => (
-                <option key={chain} value={method}>
-                  {chain === selectedAccount?.chain ? "⭐ " : ""}
-                  {chain} ({method})
-                </option>
-              ))}
+              <option value="balance">Bitrefill 余额 (即时到账)</option>
+              {Object.entries(PAYMENT_METHODS)
+                .filter(([, m]) => m !== "balance")
+                .map(([chain, method]) => (
+                  <option key={chain} value={method}>
+                    {chain === selectedAccount?.chain ? "⭐ " : ""}
+                    {chain} ({method})
+                  </option>
+                ))}
             </select>
           </div>
         </div>
+
+        {/* Balance info */}
+        {isBalancePayment && (
+          <div className="flex items-center gap-2 p-3 mb-4 rounded-lg bg-[var(--surface-blue)]">
+            <Coins className="size-4 text-[var(--primary)]" />
+            {loadingBalance ? (
+              <Skeleton variant="text" className="w-32 h-4" />
+            ) : balance ? (
+              <span className="text-xs text-[var(--foreground)]">
+                账户余额: <strong>{balance.amount.toFixed(2)} {balance.currency}</strong>
+              </span>
+            ) : (
+              <span className="text-xs text-[var(--muted-foreground)]">无法获取余额</span>
+            )}
+          </div>
+        )}
 
         {/* Checkout button */}
         <Button
@@ -233,17 +276,22 @@ export default function CartPage() {
           className="w-full"
           onClick={handleCheckout}
           loading={creatingInvoice}
-          disabled={!selectedAccount}
+          disabled={isCryptoPayment && !selectedAccount}
         >
-          {selectedAccount ? (
+          {isCryptoPayment && !selectedAccount ? (
             <>
               <Wallet className="size-4" />
-              创建订单并支付
+              请先在钱包管理页面连接钱包
+            </>
+          ) : isBalancePayment ? (
+            <>
+              <CreditCard className="size-4" />
+              余额支付 {formatCurrency(totalAmount, currency)}
             </>
           ) : (
             <>
               <Wallet className="size-4" />
-              请先在钱包管理页面连接钱包
+              创建订单并支付
             </>
           )}
         </Button>

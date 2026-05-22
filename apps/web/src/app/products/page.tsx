@@ -88,7 +88,7 @@ export default function ProductsPage() {
     <div className="page-enter space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-title-lg text-[var(--foreground)]">礼品卡商店</h1>
+        <h1 className="text-title-lg text-[var(--foreground)]">商店</h1>
         <p className="text-body-sm text-[var(--muted-foreground)] mt-2">
           浏览 1,500+ 品牌，覆盖 180+ 国家和地区
         </p>

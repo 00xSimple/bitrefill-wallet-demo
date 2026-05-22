@@ -9,7 +9,7 @@ import "./app.css";
 export const metadata: Metadata = {
   title: "Bitrefill Wallet — 让你的钱包成为电商助手",
   description:
-    "使用加密货币浏览和购买礼品卡、手机充值、eSIM — 安全、快速、去中心化。",
+    "使用加密货币浏览和购买数字商品、手机充值、eSIM — 安全、快速、去中心化。",
 };
 
 export default function RootLayout({

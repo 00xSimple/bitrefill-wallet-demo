@@ -25,6 +25,7 @@ import {
   ArrowRight,
   RefreshCw,
   AlertTriangle,
+  Gift,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useOrderStore, useWalletStore } from "@/lib/store";
@@ -41,11 +42,21 @@ const statusConfig: Record<
   { icon: React.FC<{ className?: string }>; label: string; variant: "success" | "primary" | "neutral" | "destructive" }
 > = {
   delivered: { icon: CheckCircle, label: "已交付", variant: "success" },
-  paid: { icon: CheckCircle, label: "已支付", variant: "success" },
-  pending: { icon: Clock, label: "待支付", variant: "primary" },
+  complete: { icon: CheckCircle, label: "已完成", variant: "success" },
+  not_delivered: { icon: Clock, label: "待处理", variant: "primary" },
+  all_error: { icon: XCircle, label: "失败", variant: "destructive" },
   expired: { icon: XCircle, label: "已过期", variant: "destructive" },
-  failed: { icon: XCircle, label: "失败", variant: "destructive" },
 };
+
+function getDisplayStatus(invoice: BitrefillInvoice): { label: string; icon: React.FC<{ className?: string }>; variant: "success" | "primary" | "neutral" | "destructive" } {
+  if (invoice.status === "not_delivered") {
+    if (invoice.paymentStatus === "unpaid" && invoice.paymentMethod !== "balance") {
+      return { icon: Clock, label: "待支付", variant: "primary" };
+    }
+    return { icon: Clock, label: "处理中", variant: "primary" };
+  }
+  return statusConfig[invoice.status] ?? { icon: Clock, label: invoice.status, variant: "neutral" };
+}
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -59,7 +70,7 @@ export default function OrdersPage() {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [sendDialogInvoice, setSendDialogInvoice] = useState<BitrefillInvoice | null>(null);
 
-  // Fetch invoices from API on mount
+  // Fetch invoices from API on mount, then fetch redemption codes
   const loadFromApi = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
@@ -67,12 +78,36 @@ export default function OrdersPage() {
     try {
       const result = await client.listInvoices({ limit: 100 });
       setOrders(result.invoices);
+
+      // Fetch redemption codes for completed invoices that lack them
+      for (const inv of result.invoices) {
+        if (
+          (inv.status === "complete" || inv.status === "delivered") &&
+          inv.orderIds?.length &&
+          !inv.deliveryDetails?.code
+        ) {
+          try {
+            const order = await client.getOrder(inv.orderIds![0]!);
+            if (order.redemptionInfo?.code) {
+              updateOrder(inv.id, {
+                deliveryDetails: {
+                  code: order.redemptionInfo.code,
+                  instructions: order.redemptionInfo.instructions,
+                  pin: order.redemptionInfo.pin,
+                },
+              });
+            }
+          } catch {
+            // skip
+          }
+        }
+      }
     } catch (e: any) {
       setLoadError(e.message || "加载订单失败");
     } finally {
       setLoading(false);
     }
-  }, [setOrders]);
+  }, [setOrders, updateOrder]);
 
   useEffect(() => {
     loadFromApi();
@@ -86,6 +121,27 @@ export default function OrdersPage() {
       try {
         const updated = await client.getInvoice(invoiceId);
         updateOrder(invoiceId, updated);
+
+        // Fetch redemption if newly completed
+        if (
+          (updated.status === "complete" || updated.status === "delivered") &&
+          updated.orderIds?.length
+        ) {
+          try {
+            const order = await client.getOrder(updated.orderIds![0]!);
+            if (order.redemptionInfo?.code) {
+              updateOrder(invoiceId, {
+                deliveryDetails: {
+                  code: order.redemptionInfo.code,
+                  instructions: order.redemptionInfo.instructions,
+                  pin: order.redemptionInfo.pin,
+                },
+              });
+            }
+          } catch {
+            // skip
+          }
+        }
       } catch {
         // Silently fail
       } finally {
@@ -99,17 +155,39 @@ export default function OrdersPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     const activeIds = orders
-      .filter((o) => o.status === "pending" || o.status === "paid")
+      .filter((o) => o.status === "not_delivered")
       .map((o) => o.id);
 
     if (activeIds.length === 0) return;
 
     pollRef.current = setInterval(async () => {
       const client = getBitrefillClient();
+      const store = useOrderStore.getState();
       for (const id of activeIds) {
         try {
           const updated = await client.getInvoice(id);
           updateOrder(id, updated);
+
+          // Fetch redemption if newly completed
+          if (
+            (updated.status === "complete" || updated.status === "delivered") &&
+            updated.orderIds?.length
+          ) {
+            try {
+              const order = await client.getOrder(updated.orderIds![0]!);
+              if (order.redemptionInfo?.code) {
+                updateOrder(id, {
+                  deliveryDetails: {
+                    code: order.redemptionInfo.code,
+                    instructions: order.redemptionInfo.instructions,
+                    pin: order.redemptionInfo.pin,
+                  },
+                });
+              }
+            } catch {
+              // skip
+            }
+          }
         } catch {
           // Skip failed polls
         }
@@ -119,7 +197,7 @@ export default function OrdersPage() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [orders.filter((o) => o.status === "pending" || o.status === "paid").join(",")]);
+  }, [orders.filter((o) => o.status === "not_delivered").join(",")]);
 
   // Re-create an expired invoice
   const handleRetryOrder = async (invoice: BitrefillInvoice) => {
@@ -140,8 +218,13 @@ export default function OrdersPage() {
     }
   };
 
-  const pendingOrders = orders.filter((o) => o.status === "pending" || o.status === "paid");
-  const completedOrders = orders.filter((o) => o.status !== "pending" && o.status !== "paid");
+  const isFinishedStatus = (s: string) =>
+    s !== "not_delivered";
+  const hasPaymentAddress = (o: BitrefillInvoice) =>
+    o.paymentAddress && o.paymentMethod !== "balance" && o.paymentStatus === "unpaid";
+
+  const pendingOrders = orders.filter((o) => o.status === "not_delivered");
+  const completedOrders = orders.filter((o) => isFinishedStatus(o.status));
 
   return (
     <div className="page-enter space-y-6">
@@ -204,7 +287,7 @@ export default function OrdersPage() {
           <Receipt className="size-12 text-[var(--muted-foreground)] mx-auto mb-4" />
           <p className="text-body-lg font-semibold text-[var(--foreground)]">暂无订单</p>
           <p className="text-body-sm text-[var(--muted-foreground)] mt-2 mb-4">
-            去礼品卡商店选购你喜欢的商品
+            去商店选购你喜欢的商品
           </p>
           <Button onClick={() => router.push("/products")}>
             <ShoppingBag className="size-4" />
@@ -214,7 +297,10 @@ export default function OrdersPage() {
       )}
 
       {/* Active payment panels */}
-      {!loading && pendingOrders.map((order) => (
+      {!loading && pendingOrders.map((order) => {
+        const displayStatus = getDisplayStatus(order);
+        const StatusIcon = displayStatus.icon;
+        return (
         <div key={order.id} className="space-y-4">
           {/* Order summary header */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -225,17 +311,41 @@ export default function OrdersPage() {
                 {new Date(order.createdAt).toLocaleString("zh-CN")}
               </p>
             </div>
-            <Badge variant={statusConfig[order.status]?.variant ?? "neutral"} size="md">
-              {(() => {
-                const Icon = statusConfig[order.status]?.icon ?? Clock;
-                return <Icon className="size-3.5" />;
-              })()}
-              <span className="ml-1">{statusConfig[order.status]?.label ?? order.status}</span>
+            <Badge variant={displayStatus.variant} size="md">
+              <StatusIcon className="size-3.5" />
+              <span className="ml-1">{displayStatus.label}</span>
             </Badge>
           </div>
 
-          {/* Payment panel (only for pending) */}
-          {order.status === "pending" && order.paymentAddress && (
+          {/* Product details from orders */}
+          {order.orders.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {order.orders.map((o) => (
+                <SectionPanel key={o.id} padding="md" className="border-[var(--border)]">
+                  <div className="flex items-center gap-3">
+                    {o.product.image && (
+                      <img
+                        src={`https://cdn.bitrefill.com/primg/w48h32/${o.product.id}.webp`}
+                        alt={o.product.name}
+                        className="size-10 rounded-lg object-cover shrink-0"
+                      />
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-[var(--foreground)] truncate">
+                        {o.product.name}
+                      </p>
+                      <p className="text-2xs text-[var(--muted-foreground)]">
+                        {o.product.value} {o.product.currency}
+                      </p>
+                    </div>
+                  </div>
+                </SectionPanel>
+              ))}
+            </div>
+          )}
+
+          {/* Payment panel (only for unpaid crypto invoices) */}
+          {hasPaymentAddress(order) && (
             <PaymentPanel
               invoice={order}
               onRefresh={() => handleRefreshInvoice(order.id)}
@@ -243,8 +353,8 @@ export default function OrdersPage() {
             />
           )}
 
-          {/* Send from wallet button */}
-          {order.status === "pending" && selectedAccount && keystoreJson && (
+          {/* Send from wallet button (only for unpaid crypto invoices) */}
+          {hasPaymentAddress(order) && selectedAccount && keystoreJson && (
             <Button
               variant="outline"
               className="w-full"
@@ -255,11 +365,11 @@ export default function OrdersPage() {
             </Button>
           )}
 
-          {/* Delivery code */}
-          {order.status === "delivered" && order.deliveryDetails?.code && (
+          {/* Delivery code (for completed/delivered) */}
+          {(order.status === "delivered" || order.status === "complete") && order.deliveryDetails?.code && (
             <SectionPanel padding="md" className="border-[var(--success-border)]">
               <div className="flex items-center gap-2 mb-2">
-                <CheckCircle className="size-4 text-[var(--success)]" />
+                <Gift className="size-4 text-[var(--success)]" />
                 <span className="text-sm font-semibold text-[var(--success-text)]">
                   兑换码已生成
                 </span>
@@ -294,21 +404,21 @@ export default function OrdersPage() {
               重新创建
             </Button>
           )}
-          {order.status === "failed" && (
+          {order.status === "all_error" && (
             <Button variant="outline" size="sm" className="w-full" onClick={() => handleRetryOrder(order)}>
               重试
             </Button>
           )}
         </div>
-      ))}
+      )})}
 
       {/* Completed orders list */}
       {!loading && completedOrders.length > 0 && (
         <div className="space-y-3">
           <h2 className="text-title-sm text-[var(--foreground)]">历史订单</h2>
           {completedOrders.map((order) => {
-            const cfg = statusConfig[order.status] ?? statusConfig.pending;
-            const StatusIcon = cfg!.icon;
+            const displayStatus = getDisplayStatus(order);
+            const StatusIcon = displayStatus.icon;
             return (
               <Card key={order.id}>
                 <CardHeader>
@@ -322,9 +432,9 @@ export default function OrdersPage() {
                         <CardDescription>订单号: {order.id}</CardDescription>
                       </div>
                     </div>
-                    <Badge variant={cfg!.variant} size="md">
+                    <Badge variant={displayStatus.variant} size="md">
                       <StatusIcon className="size-3.5" />
-                      <span className="ml-1">{cfg!.label}</span>
+                      <span className="ml-1">{displayStatus.label}</span>
                     </Badge>
                   </div>
                 </CardHeader>
@@ -336,10 +446,34 @@ export default function OrdersPage() {
                       label="创建时间"
                       value={new Date(order.createdAt).toLocaleDateString("zh-CN")}
                     />
-                    <InfoBlock label="状态" value={cfg!.label} />
+                    <InfoBlock label="状态" value={displayStatus.label} />
                   </div>
+                  {/* Order products */}
+                  {order.orders.length > 0 && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
+                      {order.orders.map((o) => (
+                        <div key={o.id} className="flex items-center gap-3 p-3 rounded-xl bg-[var(--surface-page)] border border-[var(--border)]">
+                          {o.product.image && (
+                            <img
+                              src={`https://cdn.bitrefill.com/primg/w48h32/${o.product.id}.webp`}
+                              alt={o.product.name}
+                              className="size-10 rounded-lg object-cover shrink-0"
+                            />
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-semibold text-[var(--foreground)] truncate">
+                              {o.product.name}
+                            </p>
+                            <p className="text-2xs text-[var(--muted-foreground)]">
+                              {o.product.value} {o.product.currency}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
-                {order.status === "delivered" && order.deliveryDetails?.code && (
+                {(order.status === "delivered" || order.status === "complete") && order.deliveryDetails?.code && (
                   <CardFooter>
                     <div className="w-full">
                       <p className="text-xs font-semibold text-[var(--foreground)] mb-2">

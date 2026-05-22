@@ -33,7 +33,7 @@ export function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
 
   const navItems = [
     { href: "/", label: "仪表盘", icon: LayoutDashboard },
-    { href: "/products", label: "礼品卡商店", icon: ShoppingBag },
+    { href: "/products", label: "商店", icon: ShoppingBag },
     { href: "/cart", label: "购物车", icon: ShoppingCart, badge: cartCount > 0 ? cartCount : 0 },
     { href: "/orders", label: "我的订单", icon: Receipt },
     { href: "/wallet", label: "钱包管理", icon: Wallet },
