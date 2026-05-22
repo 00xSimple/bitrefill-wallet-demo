@@ -1,5 +1,5 @@
 {
-  "buildCommand": "cd apps/web && npx next build",
+  "buildCommand": "pnpm --filter @repo/web build",
   "outputDirectory": "apps/web/.next",
   "installCommand": "pnpm install --frozen-lockfile",
   "framework": "nextjs",
