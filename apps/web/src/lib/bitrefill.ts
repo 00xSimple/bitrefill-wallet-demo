@@ -211,9 +211,14 @@ class BitrefillClient {
 
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(
-        `Bitrefill API error ${res.status}: ${body.slice(0, 200)}`
-      );
+      let message = `Bitrefill API error ${res.status}`;
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.message) {
+          message = parsed.message;
+        }
+      } catch {}
+      throw new Error(message);
     }
 
     return res.json();
