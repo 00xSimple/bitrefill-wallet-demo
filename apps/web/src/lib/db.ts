@@ -72,6 +72,16 @@ async function getFromStore<T>(key: string): Promise<T | undefined> {
   });
 }
 
+async function getJSONFromStore<T>(key: string): Promise<T | undefined> {
+  const raw = await getFromStore<string>(key);
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- Migration from single-wallet to multi-wallet ----
 
 async function migrateIfNeeded(): Promise<void> {
@@ -118,7 +128,7 @@ export async function loadWallets(): Promise<WalletRecord[]> {
   if (!indexedDB) return [];
   await migrateIfNeeded();
 
-  const ids = await getFromStore<string[]>("wallet_ids");
+  const ids = await getJSONFromStore<string[]>("wallet_ids");
   if (!ids || ids.length === 0) return [];
 
   const records: WalletRecord[] = [];
@@ -139,7 +149,7 @@ export async function deleteWallet(id: string): Promise<void> {
     store.delete(`wallet:${id}`);
   });
   // Also remove from wallet_ids list
-  const ids = (await getFromStore<string[]>("wallet_ids")) || [];
+  const ids = (await getJSONFromStore<string[]>("wallet_ids")) || [];
   const next = ids.filter((i) => i !== id);
   await withStore("readwrite", (store) => {
     store.put(JSON.stringify(next), "wallet_ids");
@@ -167,7 +177,7 @@ export async function getActiveWalletId(): Promise<string | null> {
 
 export async function addWalletToList(id: string): Promise<void> {
   if (!indexedDB) return;
-  const ids = (await getFromStore<string[]>("wallet_ids")) || [];
+  const ids = (await getJSONFromStore<string[]>("wallet_ids")) || [];
   if (!ids.includes(id)) {
     ids.push(id);
     await withStore("readwrite", (store) => {
@@ -178,7 +188,7 @@ export async function addWalletToList(id: string): Promise<void> {
 
 export async function clearAllWallets(): Promise<void> {
   if (!indexedDB) return;
-  const ids = (await getFromStore<string[]>("wallet_ids")) || [];
+  const ids = (await getJSONFromStore<string[]>("wallet_ids")) || [];
   await withStore("readwrite", (store) => {
     for (const id of ids) {
       store.delete(`wallet:${id}`);
