@@ -105,7 +105,7 @@ export type BitrefillPaymentMethod = keyof typeof PAYMENT_METHODS;
 
 const CRYPTO_DECIMALS: Record<string, number> = {
   BTC: 8,
-  ETH: 18,
+  ETH: 6,
   LTC: 8,
   DOGE: 8,
   TRX: 6,
@@ -114,7 +114,10 @@ const CRYPTO_DECIMALS: Record<string, number> = {
 
 function convertCryptoPrice(price: number, currency: string): string {
   const decimals = CRYPTO_DECIMALS[currency] ?? 8;
-  return (price / Math.pow(10, decimals)).toString();
+  return (price / Math.pow(10, decimals))
+    .toFixed(decimals)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "");
 }
 
 // ---- Data mapping ----
