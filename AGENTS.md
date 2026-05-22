@@ -97,3 +97,7 @@ transaction signing, token approvals, DApp interaction, or risk-related UI
 components, read and apply:
 
 `./security/SKILL.md`
+
+## Push code
+ 
+use push_with_key.ps1 to push code to remote server
