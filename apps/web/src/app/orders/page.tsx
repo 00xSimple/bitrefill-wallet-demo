@@ -112,6 +112,7 @@ export default function OrdersPage() {
   useEffect(() => {
     if (!keystoreJson) {
       setOrders([]);
+      setLoading(false);
       return;
     }
     loadFromApi();
