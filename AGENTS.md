@@ -101,3 +101,5 @@ components, read and apply:
 ## Push code
  
 use push_with_key.ps1 to push code to remote server
+
+只有在收到指令的情况下才执行推动
