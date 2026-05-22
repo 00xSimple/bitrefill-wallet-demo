@@ -225,6 +225,14 @@ export default function ProductDetailPage() {
             </div>
           </div>
 
+          {/* Phone required notice */}
+          {product.recipientType === "phone_number" && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--warning)]/10 text-sm text-[var(--warning-foreground)]">
+              <Phone className="size-4 shrink-0" />
+              <span>此商品为话费充值，请在购物车中填写接收手机号</span>
+            </div>
+          )}
+
           {/* Add to cart */}
           <Button
             size="lg"

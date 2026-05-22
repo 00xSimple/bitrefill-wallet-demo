@@ -15,6 +15,7 @@ export interface BitrefillProduct {
   category: string;
   countryCode: string;
   countryName?: string;
+  recipientType?: string;
   termsAndConditions?: string;
   price: {
     currency: string;
@@ -165,6 +166,7 @@ function mapProduct(raw: any): BitrefillProduct {
     category: categories[0] || "",
     countryCode: raw.country_code || "",
     countryName: raw.country_name || "",
+    recipientType: raw.recipient_type || undefined,
     termsAndConditions: raw.termsAndConditions
       ? raw.termsAndConditions.replace(/\\r\\n/g, "\n").replace(/<br>/g, "\n")
       : "",
