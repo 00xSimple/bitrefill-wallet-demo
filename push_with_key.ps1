@@ -1,5 +1,10 @@
 $ErrorActionPreference = "Stop"
 
+
+git remote set-url origin git@github.com:00xSimple/bitrefill-wallet-demo.git
+$env:GIT_SSH_COMMAND='ssh -i C:/Users/wyb/.ssh/github_deploy_20260522_153640 -o IdentitiesOnly=yes'
+ssh -i C:/Users/wyb/.ssh/github_deploy_20260522_153640 -T git@github.com
+
 # ===== 固定配置（按需修改）=====
 $RepoPath = "C:\Data\code\imtoken\bitrefill-demo"
 $KeyPath = "C:\Users\wyb\.ssh\github_deploy_20260522_153640"
