@@ -115,7 +115,7 @@ export default function CartPage() {
     }
 
     setCreatingInvoice(false);
-  }, [items, paymentMethod, chainPaymentMethod, isBalancePayment, email, selectedAccount, addOrder, clearCart, toast, router]);
+  }, [items, paymentMethod, chainPaymentMethod, isBalancePayment, email, phone, selectedAccount, addOrder, clearCart, toast, router]);
 
   const totalAmount = items.reduce(
     (sum, it) =>
