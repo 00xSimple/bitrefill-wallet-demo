@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BITREFILL_API = "https://api.bitrefill.com/v2";
 
-const TEST_API_KEY = "e3Ha3LqwE1SVzQu3OUkhCrcnHO1mAOopJgquU7Qp5-I";
+const TEST_API_KEY = "fGG2dyNkL5Ua08MouISzZYM0FZfhUN3y383NfRHzGOU";
 
 function getApiKey(): string {
   return process.env.BITREFILL_API_KEY || TEST_API_KEY;
