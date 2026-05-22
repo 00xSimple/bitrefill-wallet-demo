@@ -76,6 +76,7 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
         isLocked: true,
       });
       clearWalletData().catch(() => {});
+      useOrderStore.getState().setOrders([]);
     },
 
     hydrateFromDB: async () => {

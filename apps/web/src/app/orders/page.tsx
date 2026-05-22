@@ -110,8 +110,12 @@ export default function OrdersPage() {
   }, [setOrders, updateOrder]);
 
   useEffect(() => {
+    if (!keystoreJson) {
+      setOrders([]);
+      return;
+    }
     loadFromApi();
-  }, [loadFromApi]);
+  }, [keystoreJson]);
 
   // Refresh single invoice status
   const handleRefreshInvoice = useCallback(
