@@ -178,7 +178,7 @@ function mapProduct(raw: any): BitrefillProduct {
       currency: "CNY",
       amount: p.amount ?? 0,
       value: Number(p.value) || p.amount || 0,
-      packageId: p.package_id || undefined,
+      packageId: p.id || undefined,
     })),
     imageUrl: raw.id
       ? `https://cdn.bitrefill.com/primg/w720h432/${raw.id}.webp`
