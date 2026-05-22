@@ -1,0 +1,17 @@
+{
+  "name": "bitrefill-wallet",
+  "private": true,
+  "version": "1.0.0",
+  "description": "让你的钱包成为电商助手 — Web wallet with Bitrefill integration",
+  "scripts": {
+    "dev": "pnpm --filter @repo/web dev",
+    "build": "pnpm --filter @repo/web build",
+    "check": "pnpm -r check",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "verify": "pnpm typecheck && pnpm lint"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

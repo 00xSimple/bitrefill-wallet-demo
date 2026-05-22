@@ -1,0 +1,13 @@
+node_modules/
+.next/
+dist/
+.turbo/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+.DS_Store
+接口返回示例.md
+.claude/
+UserswybAppDataLocalTemptoken-core-check/
+PLAN.md
