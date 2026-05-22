@@ -103,6 +103,20 @@ export const PAYMENT_METHODS: Record<string, string> = {
 
 export type BitrefillPaymentMethod = keyof typeof PAYMENT_METHODS;
 
+const CRYPTO_DECIMALS: Record<string, number> = {
+  BTC: 8,
+  ETH: 18,
+  LTC: 8,
+  DOGE: 8,
+  TRX: 6,
+  BCH: 8,
+};
+
+function convertCryptoPrice(price: number, currency: string): string {
+  const decimals = CRYPTO_DECIMALS[currency] ?? 8;
+  return (price / Math.pow(10, decimals)).toString();
+}
+
 // ---- Data mapping ----
 
 function mapInvoice(raw: any): BitrefillInvoice {
@@ -137,7 +151,9 @@ function mapInvoice(raw: any): BitrefillInvoice {
     currency: firstProduct?.currency || "USD",
     paymentMethod: payment.method || raw.payment_method || raw.paymentMethod || "",
     paymentAddress: payment.address || raw.payment_address || raw.paymentAddress || "",
-    paymentAmount: payment.price != null ? String(payment.price) : (raw.payment_amount || raw.paymentAmount || ""),
+    paymentAmount: payment.price != null
+      ? convertCryptoPrice(Number(payment.price), payment.currency || "")
+      : (raw.payment_amount || raw.paymentAmount || ""),
     paymentCurrency: payment.currency || raw.payment_currency || raw.paymentCurrency || "",
     paymentStatus: payment.status || "",
     createdAt: raw.created_time || raw.createdAt || new Date().toISOString(),
