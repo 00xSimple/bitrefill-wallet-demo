@@ -155,7 +155,7 @@ export default function DashboardPage() {
               <ProductCard
                 key={p.id}
                 product={p}
-                onClick={() => router.push(`/products?id=${p.id}`)}
+                onClick={() => router.push(`/products/${p.id}`)}
               />
             ))}
           </div>
