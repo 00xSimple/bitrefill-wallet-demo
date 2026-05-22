@@ -1,25 +1,30 @@
 import { create } from "zustand";
 import type { Account } from "./wallet";
 import type { BitrefillProduct, BitrefillInvoice } from "./bitrefill";
-import { loadWalletData, saveWalletData, clearWalletData, isDatabaseAvailable } from "./db";
-
-async function persistIfReady(state: WalletState) {
-  if (!state.hydrated) return;
-  await saveWalletData({
-    keystore: state.keystoreJson,
-    mnemonic: state.mnemonic,
-    accounts: state.accounts,
-    selectedAccountId: state.selectedAccount?.address || null,
-  }).catch(() => {});
-}
+import {
+  saveWallet,
+  loadWallets,
+  deleteWallet,
+  setActiveWalletId,
+  getActiveWalletId,
+  addWalletToList,
+  clearAllWallets,
+  isDatabaseAvailable,
+  type WalletRecord,
+} from "./db";
 
 // ---- Wallet State ----
 
 export interface WalletState {
+  wallets: WalletRecord[];
+  activeWalletId: string | null;
+
+  // Derived from active wallet
   keystoreJson: string | null;
   mnemonic: string | null;
   accounts: Account[];
   selectedAccount: Account | null;
+
   isLocked: boolean;
   wasmAvailable: boolean;
   hydrated: boolean;
@@ -32,86 +37,170 @@ export interface WalletState {
   lock: () => void;
   unlock: () => void;
   reset: () => void;
+
+  // Multi-wallet
+  addWallet: (record: WalletRecord) => void;
+  switchWallet: (id: string) => void;
+  removeWallet: (id: string) => void;
+
   hydrateFromDB: () => Promise<void>;
 }
 
+function pickActiveWallet(wallets: WalletRecord[], id: string | null) {
+  if (!id || wallets.length === 0) {
+    return {
+      keystoreJson: null,
+      mnemonic: null,
+      accounts: [] as Account[],
+      selectedAccount: null as Account | null,
+      activeWalletId: null as string | null,
+    };
+  }
+  const wallet = wallets.find((w) => w.id === id) ?? wallets[0]!;
+  const accounts = wallet.accounts;
+  const selectedAccount = wallet.selectedAccountId
+    ? accounts.find((a) => a.address === wallet.selectedAccountId) ?? accounts[0] ?? null
+    : accounts[0] ?? null;
+  return {
+    keystoreJson: wallet.keystore,
+    mnemonic: wallet.mnemonic,
+    accounts,
+    selectedAccount,
+    activeWalletId: wallet.id,
+  };
+}
+
 export const useWalletStore = create<WalletState>()((set, get) => ({
-    keystoreJson: null,
-    mnemonic: null,
-    accounts: [],
-    selectedAccount: null,
-    isLocked: true,
-    wasmAvailable: false,
-    hydrated: false,
+  wallets: [],
+  activeWalletId: null,
+  keystoreJson: null,
+  mnemonic: null,
+  accounts: [],
+  selectedAccount: null,
+  isLocked: true,
+  wasmAvailable: false,
+  hydrated: false,
 
-    setKeystore: (json) => {
-      set({ keystoreJson: json });
-      persistIfReady(get());
-    },
-    setMnemonic: (mnemonic) => {
-      set({ mnemonic });
-      persistIfReady(get());
-    },
-    setAccounts: (accounts) => {
-      set({
-        accounts,
-        selectedAccount: accounts[0] ?? null,
-      });
-      persistIfReady(get());
-    },
-    selectAccount: (account) => {
-      set({ selectedAccount: account });
-      persistIfReady(get());
-    },
-    setWasmAvailable: (v) => set({ wasmAvailable: v }),
-    lock: () => set({ isLocked: true }),
-    unlock: () => set({ isLocked: false }),
+  // ---- Primitive setters (update active wallet in list) ----
 
-    reset: () => {
-      set({
-        keystoreJson: null,
-        mnemonic: null,
-        accounts: [],
-        selectedAccount: null,
-        isLocked: true,
-      });
-      clearWalletData().catch(() => {});
-      useOrderStore.getState().setOrders([]);
-    },
+  setKeystore: (json) => {
+    const { wallets, activeWalletId } = get();
+    const idx = wallets.findIndex((w) => w.id === activeWalletId);
+    if (idx >= 0) {
+      const updated = [...wallets];
+      updated[idx] = { ...updated[idx]!, keystore: json };
+      set({ wallets: updated, keystoreJson: json });
+      saveWallet(updated[idx]!).catch(() => {});
+    }
+  },
 
-    hydrateFromDB: async () => {
-      try {
-        const available = await isDatabaseAvailable();
-        if (!available) {
-          set({ hydrated: true });
-          return;
-        }
-        const data = await loadWalletData();
-        if (data.keystore) {
-          set({
-            keystoreJson: data.keystore,
-            mnemonic: data.mnemonic || null,
-            accounts: (data.accounts as Account[]) || [],
-            selectedAccount: null,
-            isLocked: true,
-            hydrated: true,
-          });
-          // Select previously selected account if available
-          if (data.selectedAccountId && Array.isArray(data.accounts)) {
-            const acct = (data.accounts as Account[]).find(
-              (a) => a.address === data.selectedAccountId
-            );
-            if (acct) set({ selectedAccount: acct });
-          }
-        } else {
-          set({ hydrated: true });
-        }
-      } catch {
+  setMnemonic: (mnemonic) => {
+    const { wallets, activeWalletId } = get();
+    const idx = wallets.findIndex((w) => w.id === activeWalletId);
+    if (idx >= 0) {
+      const updated = [...wallets];
+      updated[idx] = { ...updated[idx]!, mnemonic };
+      set({ wallets: updated, mnemonic });
+      saveWallet(updated[idx]!).catch(() => {});
+    }
+  },
+
+  setAccounts: (accounts) => {
+    const { wallets, activeWalletId } = get();
+    const idx = wallets.findIndex((w) => w.id === activeWalletId);
+    if (idx >= 0) {
+      const updated = [...wallets];
+      const sel = accounts[0] ?? null;
+      updated[idx] = { ...updated[idx]!, accounts, selectedAccountId: sel?.address ?? null };
+      set({ wallets: updated, accounts, selectedAccount: sel });
+      saveWallet(updated[idx]!).catch(() => {});
+    }
+  },
+
+  selectAccount: (account) => {
+    const { wallets, activeWalletId } = get();
+    const idx = wallets.findIndex((w) => w.id === activeWalletId);
+    if (idx >= 0) {
+      const updated = [...wallets];
+      updated[idx] = { ...updated[idx]!, selectedAccountId: account?.address ?? null };
+      set({ wallets: updated, selectedAccount: account });
+      saveWallet(updated[idx]!).catch(() => {});
+    }
+  },
+
+  setWasmAvailable: (v) => set({ wasmAvailable: v }),
+  lock: () => set({ isLocked: true }),
+  unlock: () => set({ isLocked: false }),
+
+  reset: () => {
+    set({
+      wallets: [],
+      activeWalletId: null,
+      keystoreJson: null,
+      mnemonic: null,
+      accounts: [],
+      selectedAccount: null,
+      isLocked: true,
+    });
+    clearAllWallets().catch(() => {});
+    useOrderStore.getState().setOrders([]);
+  },
+
+  // ---- Multi-wallet actions ----
+
+  addWallet: (record) => {
+    const { wallets } = get();
+    const updated = [...wallets, record];
+    const derived = pickActiveWallet(updated, record.id);
+    set({ wallets: updated, ...derived });
+
+    saveWallet(record).catch(() => {});
+    addWalletToList(record.id).catch(() => {});
+    setActiveWalletId(record.id).catch(() => {});
+  },
+
+  switchWallet: (id) => {
+    const { wallets } = get();
+    const derived = pickActiveWallet(wallets, id);
+    set(derived);
+    setActiveWalletId(id).catch(() => {});
+    useOrderStore.getState().setOrders([]);
+  },
+
+  removeWallet: (id) => {
+    const { wallets } = get();
+    const next = wallets.filter((w) => w.id !== id);
+    const newActiveId = id === get().activeWalletId
+      ? next[0]?.id ?? null
+      : get().activeWalletId;
+    const derived = pickActiveWallet(next, newActiveId);
+    set({ wallets: next, ...derived });
+    deleteWallet(id).catch(() => {});
+  },
+
+  // ---- Hydrate ----
+
+  hydrateFromDB: async () => {
+    try {
+      const available = await isDatabaseAvailable();
+      if (!available) {
         set({ hydrated: true });
+        return;
       }
-    },
-  }));
-
+      const wallets = await loadWallets();
+      const activeId = await getActiveWalletId();
+      const derived = pickActiveWallet(wallets, activeId);
+      set({
+        wallets,
+        ...derived,
+        isLocked: true,
+        hydrated: true,
+      });
+    } catch {
+      set({ hydrated: true });
+    }
+  },
+}));
 
 // ---- Cart State ----
 

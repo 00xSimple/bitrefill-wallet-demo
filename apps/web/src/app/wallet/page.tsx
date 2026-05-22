@@ -28,6 +28,7 @@ import {
   Plus,
   AlertTriangle,
   Loader2,
+  Check,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -39,6 +40,7 @@ import {
   type ChainType,
 } from "@/lib/wallet";
 import { useWalletStore } from "@/lib/store";
+import type { WalletRecord } from "@/lib/db";
 
 const CHAIN_OPTIONS: {
   chain: ChainType;
@@ -59,23 +61,27 @@ export default function WalletPage() {
   const router = useRouter();
   const { toast } = useToast();
   const {
+    wallets,
     keystoreJson,
     accounts,
     selectedAccount,
     isLocked,
     wasmAvailable,
-    mnemonic: storedMnemonic,
     setKeystore,
     setMnemonic,
     setAccounts,
     selectAccount,
     setWasmAvailable,
     unlock,
+    lock,
     reset,
+    addWallet,
+    switchWallet,
+    removeWallet,
     hydrateFromDB,
   } = useWalletStore();
 
-  const [tab, setTab] = useState<"create" | "import" | "manage">("create");
+  const [view, setView] = useState<"manage" | "create" | "import">("manage");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [mnemonicInput, setMnemonicInput] = useState("");
@@ -88,34 +94,34 @@ export default function WalletPage() {
     new Set(["ETHEREUM"])
   );
   const [checkingWasm, setCheckingWasm] = useState(true);
+  const [creatingNew, setCreatingNew] = useState(false);
 
-  // Check WASM availability and hydrate on mount
   useEffect(() => {
     (async () => {
-      // Hydrate from IndexedDB first
       await hydrateFromDB();
-
-      // Then check WASM
       const available = await isWalletAvailable();
       setWasmAvailable(available);
       setCheckingWasm(false);
 
-      // Determine initial tab
       const state = useWalletStore.getState();
-      if (state.keystoreJson) {
-        setTab("manage");
+      if (state.wallets.length === 0) {
+        setView("create");
       }
     })();
   }, []);
 
-  // Update tab when keystore changes
-  useEffect(() => {
-    if (keystoreJson) {
-      setTab("manage");
-    }
-  }, [keystoreJson]);
+  // Reset create/import state when switching to those views
+  const resetForm = () => {
+    setPassword("");
+    setMnemonicInput("");
+    setGeneratedMnemonic("");
+    setRevealedMnemonic("");
+    setUnlockPw("");
+    setUnlockError("");
+    setSelectedChains(new Set(["ETHEREUM"]));
+  };
 
-  // Create new wallet
+  // ---- Create wallet ----
   const handleCreate = async () => {
     if (!password || password.length < 6) {
       toast({ title: "密码至少6位", variant: "error" });
@@ -129,26 +135,34 @@ export default function WalletPage() {
     setLoading(true);
     try {
       const ks = await createKeystore({ password });
-      setKeystore(ks);
-
       const mnemonic = await exportMnemonic(ks, password);
-      setGeneratedMnemonic(mnemonic);
-      setMnemonic(mnemonic);
 
       const chainDerivations = Array.from(selectedChains).map((c) => {
         const opt = CHAIN_OPTIONS.find((o) => o.chain === c)!;
         return { chain: opt.chain, derivationPath: opt.path };
       });
       const accts = await deriveAccounts(ks, password, chainDerivations);
-      setAccounts(accts);
+
+      const name = `钱包 ${wallets.length + 1}`;
+      const record: WalletRecord = {
+        id: crypto.randomUUID(),
+        name,
+        keystore: ks,
+        mnemonic,
+        accounts: accts,
+        selectedAccountId: accts[0]?.address ?? null,
+        createdAt: Date.now(),
+      };
+
+      addWallet(record);
       unlock();
+      setGeneratedMnemonic(mnemonic);
 
       toast({
-        title: "钱包创建成功",
+        title: `${name} 创建成功`,
         description: `已派生 ${accts.length} 个账户`,
         variant: "success",
       });
-      setTab("manage");
     } catch (e: any) {
       toast({ title: "创建失败", description: e.message, variant: "error" });
     } finally {
@@ -156,7 +170,7 @@ export default function WalletPage() {
     }
   };
 
-  // Import wallet
+  // ---- Import wallet ----
   const handleImport = async () => {
     if (!mnemonicInput.trim()) {
       toast({ title: "请输入助记词", variant: "error" });
@@ -177,25 +191,33 @@ export default function WalletPage() {
         password,
         mnemonic: mnemonicInput.trim(),
       });
-      setKeystore(ks);
-
-      setGeneratedMnemonic(mnemonicInput.trim());
-      setMnemonic(mnemonicInput.trim());
 
       const chainDerivations = Array.from(selectedChains).map((c) => {
         const opt = CHAIN_OPTIONS.find((o) => o.chain === c)!;
         return { chain: opt.chain, derivationPath: opt.path };
       });
       const accts = await deriveAccounts(ks, password, chainDerivations);
-      setAccounts(accts);
+
+      const name = `钱包 ${wallets.length + 1}`;
+      const record: WalletRecord = {
+        id: crypto.randomUUID(),
+        name,
+        keystore: ks,
+        mnemonic: mnemonicInput.trim(),
+        accounts: accts,
+        selectedAccountId: accts[0]?.address ?? null,
+        createdAt: Date.now(),
+      };
+
+      addWallet(record);
       unlock();
+      setGeneratedMnemonic(mnemonicInput.trim());
 
       toast({
-        title: "钱包导入成功",
+        title: `${name} 导入成功`,
         description: `已派生 ${accts.length} 个账户`,
         variant: "success",
       });
-      setTab("manage");
     } catch (e: any) {
       toast({ title: "导入失败", description: e.message, variant: "error" });
     } finally {
@@ -203,15 +225,31 @@ export default function WalletPage() {
     }
   };
 
-  // Reveal mnemonic
+  // ---- Switch wallet ----
+  const handleSwitchWallet = (id: string) => {
+    switchWallet(id);
+    lock();
+    toast({ title: "已切换钱包", variant: "info" });
+  };
+
+  // ---- Remove wallet ----
+  const handleRemoveWallet = (id: string) => {
+    const wallet = wallets.find((w) => w.id === id);
+    removeWallet(id);
+    toast({ title: `${wallet?.name ?? "钱包"} 已删除`, variant: "info" });
+    if (wallets.length <= 1) {
+      reset();
+      setView("create");
+    }
+  };
+
+  // ---- Reveal mnemonic ----
   const handleRevealMnemonic = async () => {
     if (!keystoreJson || !unlockPw) {
       setUnlockError("请输入密码");
       return;
     }
     setUnlockError("");
-
-    // Try decrypting with password
     try {
       const m = await exportMnemonic(keystoreJson, unlockPw);
       setRevealedMnemonic(m);
@@ -220,30 +258,26 @@ export default function WalletPage() {
     }
   };
 
-  // Disconnect
-  const handleReset = () => {
+  // ---- Disconnect all ----
+  const handleResetAll = () => {
     reset();
-    setTab("create");
-    setPassword("");
-    setMnemonicInput("");
-    setGeneratedMnemonic("");
-    setRevealedMnemonic("");
-    setUnlockPw("");
-    setUnlockError("");
-    toast({ title: "钱包已断开", variant: "info" });
+    setView("create");
+    resetForm();
+    setCreatingNew(false);
+    toast({ title: "所有钱包已断开", variant: "info" });
   };
 
   const toggleChain = (chain: string) => {
     setSelectedChains((prev) => {
       const next = new Set(prev);
-      if (next.has(chain) && next.size === 1) return prev; // keep at least one
+      if (next.has(chain) && next.size === 1) return prev;
       if (next.has(chain)) next.delete(chain);
       else next.add(chain);
       return next;
     });
   };
 
-  // ---- Initial loading state ----
+  // ---- Loading ----
   if (checkingWasm) {
     return (
       <div className="page-enter flex items-center justify-center py-20">
@@ -255,8 +289,8 @@ export default function WalletPage() {
     );
   }
 
-  // ---- WASM unavailable warning ----
-  if (!wasmAvailable && !keystoreJson) {
+  // ---- WASM unavailable and no wallets ----
+  if (!wasmAvailable && wallets.length === 0) {
     return (
       <div className="page-enter space-y-6">
         <div>
@@ -275,7 +309,6 @@ export default function WalletPage() {
               </h3>
               <p className="text-xs text-[var(--muted-foreground)] mt-1 mb-4">
                 WebAssembly 模块未能加载。请检查网络连接后刷新页面重试。
-                如问题持续，请联系项目维护者。
               </p>
               <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
                 刷新页面
@@ -283,319 +316,404 @@ export default function WalletPage() {
             </div>
           </div>
         </SectionPanel>
-
-        <div className="flex justify-end">
-          <Button onClick={() => router.push("/products")}>
-            先去逛逛
-            <ArrowRight className="size-4" />
-          </Button>
-        </div>
       </div>
     );
   }
 
   return (
     <div className="page-enter space-y-6">
-      <div>
-        <h1 className="text-title-lg text-[var(--foreground)]">钱包管理</h1>
-        <p className="text-body-sm text-[var(--muted-foreground)] mt-2">
-          创建、导入或管理你的多链加密钱包
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-title-lg text-[var(--foreground)]">钱包管理</h1>
+          <p className="text-body-sm text-[var(--muted-foreground)] mt-2">
+            {wallets.length > 0
+              ? `管理 ${wallets.length} 个钱包，支持多链账户`
+              : "创建或导入你的加密钱包"}
+          </p>
+        </div>
+        {wallets.length > 0 && (
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => {
+              resetForm();
+              setCreatingNew(true);
+              setView("create");
+            }}>
+              <Plus className="size-3.5" />
+              添加钱包
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleResetAll}>
+              <Trash2 className="size-3.5" />
+              断开全部
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Tab switcher */}
-      {!keystoreJson && (
-        <div className="flex gap-2">
-          {(["create", "import"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-                tab === t
-                  ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                  : "bg-[var(--secondary)] text-[var(--foreground)]"
-              }`}
-            >
-              {t === "create" ? "创建钱包" : "导入钱包"}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Create Wallet Form */}
-      {tab === "create" && !keystoreJson && (
-        <SectionPanel padding="lg" className="max-w-lg">
-          <IconBox variant="primary-soft" size="sm" className="mb-4">
-            <Wallet className="size-5" />
-          </IconBox>
-          <h2 className="text-title-sm text-[var(--foreground)] mb-1">创建新钱包</h2>
-          <p className="text-body-sm text-[var(--muted-foreground)] mb-6">
-            使用 Token Core 生成安全的 HD 钱包
-          </p>
-
-          <div className="space-y-4">
-            <Input
-              label="钱包密码"
-              type={showPw ? "text" : "password"}
-              placeholder="至少6位字符"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              rightIcon={
-                <button onClick={() => setShowPw(!showPw)}>
-                  {showPw ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              }
-            />
-
-            <div>
-              <p className="text-sm font-medium text-[var(--foreground)] mb-2">选择链</p>
-              <div className="flex flex-wrap gap-2">
-                {CHAIN_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.chain}
-                    onClick={() => toggleChain(opt.chain)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                      selectedChains.has(opt.chain)
-                        ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "bg-[var(--secondary)] text-[var(--foreground)]"
-                    }`}
-                  >
-                    {opt.icon} {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <Button size="lg" className="w-full" onClick={handleCreate} loading={loading}>
-              <Plus className="size-4" />
-              创建钱包
-            </Button>
-          </div>
-        </SectionPanel>
-      )}
-
-      {/* Import Wallet Form */}
-      {tab === "import" && !keystoreJson && (
-        <SectionPanel padding="lg" className="max-w-lg">
-          <IconBox variant="primary-soft" size="sm" className="mb-4">
-            <Download className="size-5" />
-          </IconBox>
-          <h2 className="text-title-sm text-[var(--foreground)] mb-1">导入钱包</h2>
-          <p className="text-body-sm text-[var(--muted-foreground)] mb-6">
-            使用已有的助记词恢复钱包
-          </p>
-
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm font-medium text-[var(--foreground)]">助记词</label>
-              <textarea
-                className="mt-1.5 h-24 w-full rounded-md border border-[var(--border)] bg-[var(--input-background)] px-4 py-3 text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--ring)] focus:outline-none focus:ring-3 focus:ring-[var(--ring)]/50 resize-none"
-                placeholder="输入12或24个助记词，用空格分隔"
-                value={mnemonicInput}
-                onChange={(e) => setMnemonicInput(e.target.value)}
-              />
-            </div>
-
-            <Input
-              label="钱包密码"
-              type={showPw ? "text" : "password"}
-              placeholder="至少6位字符"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              rightIcon={
-                <button onClick={() => setShowPw(!showPw)}>
-                  {showPw ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              }
-            />
-
-            <div>
-              <p className="text-sm font-medium text-[var(--foreground)] mb-2">选择链</p>
-              <div className="flex flex-wrap gap-2">
-                {CHAIN_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.chain}
-                    onClick={() => toggleChain(opt.chain)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                      selectedChains.has(opt.chain)
-                        ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
-                        : "bg-[var(--secondary)] text-[var(--foreground)]"
-                    }`}
-                  >
-                    {opt.icon} {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <Button size="lg" className="w-full" onClick={handleImport} loading={loading}>
-              <Download className="size-4" />
-              导入钱包
-            </Button>
-          </div>
-        </SectionPanel>
-      )}
-
-      {/* Backup mnemonic after create/import */}
-      {generatedMnemonic && tab !== "manage" && (
-        <SectionPanel padding="lg" className="max-w-lg border-[var(--warning)]">
-          <div className="flex items-start gap-3">
-            <Shield className="size-5 text-[var(--warning)] shrink-0 mt-0.5" />
-            <div className="w-full">
-              <h3 className="text-sm font-semibold text-[var(--foreground)]">备份助记词</h3>
-              <p className="text-xs text-[var(--muted-foreground)] mt-1 mb-3">
-                请安全保存以下助记词，它控制你的全部资产。不要分享给任何人。
-              </p>
-              <div className="bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
-                {generatedMnemonic}
-              </div>
-              <div className="flex gap-2 mt-3">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    navigator.clipboard.writeText(generatedMnemonic);
-                    toast({ title: "已复制", variant: "success" });
-                  }}
-                >
-                  <Copy className="size-3.5" />
-                  复制助记词
-                </Button>
-                <Button size="sm" onClick={() => setTab("manage")}>
-                  已安全保存
-                  <ArrowRight className="size-3.5" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </SectionPanel>
-      )}
-
-      {/* Wallet Overview + Accounts */}
-      {keystoreJson && (
+      {/* Create/Import form (shown when creating new or no wallets yet) */}
+      {(view !== "manage" || creatingNew) && (
         <>
-          <SectionPanel padding="lg">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <IconBox variant="primary" size="sm">
-                  <Wallet className="size-5" />
-                </IconBox>
-                <div>
-                  <h2 className="text-title-sm text-[var(--foreground)]">钱包概览</h2>
-                  <p className="text-xs text-[var(--muted-foreground)]">
-                    {accounts.length} 个账户 · Token Core HD 钱包
-                    {!isLocked && <Badge variant="success" size="sm" className="ml-2">已解锁</Badge>}
-                  </p>
-                </div>
-              </div>
-              <Button variant="destructive" size="sm" onClick={handleReset}>
-                <Trash2 className="size-3.5" />
-                断开钱包
-              </Button>
-            </div>
-          </SectionPanel>
-
-          {/* Accounts */}
-          <div>
-            <h3 className="text-title-sm text-[var(--foreground)] mb-4">
-              我的账户
-            </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {accounts.map((acct, i) => (
-                <Card
-                  key={i}
-                  className={`cursor-pointer transition-shadow ${
-                    selectedAccount?.address === acct.address
-                      ? "ring-2 ring-[var(--primary)]"
-                      : ""
+          {!generatedMnemonic && !creatingNew && wallets.length === 0 && (
+            <div className="flex gap-2">
+              {(["create", "import"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setView(t)}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                    view === t
+                      ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                      : "bg-[var(--secondary)] text-[var(--foreground)]"
                   }`}
-                  onClick={() => selectAccount(acct)}
                 >
-                  <CardHeader>
-                    <div className="flex items-center gap-3">
-                      <Avatar
-                        size="sm"
-                        fallback={acct.chain.slice(0, 2)}
-                        bgColor="var(--surface-blue-dim)"
-                      />
-                      <div className="flex-1">
-                        <CardTitle>{acct.chain}</CardTitle>
-                        <CardDescription>{acct.derivationPath}</CardDescription>
-                      </div>
-                      <Badge
-                        variant={
-                          selectedAccount?.address === acct.address ? "primary" : "neutral"
-                        }
-                        size="sm"
+                  {t === "create" ? "创建钱包" : "导入钱包"}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!generatedMnemonic && creatingNew && (
+            <div className="flex gap-2">
+              {(["create", "import"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setView(t)}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                    view === t
+                      ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                      : "bg-[var(--secondary)] text-[var(--foreground)]"
+                  }`}
+                >
+                  {t === "create" ? "创建钱包" : "导入钱包"}
+                </button>
+              ))}
+              <button
+                onClick={() => { setCreatingNew(false); setView("manage"); }}
+                className="px-4 py-2 rounded-full text-sm font-medium bg-[var(--secondary)] text-[var(--foreground)]"
+              >
+                取消
+              </button>
+            </div>
+          )}
+
+          {!generatedMnemonic && (view === "create") && (
+            <SectionPanel padding="lg" className="max-w-lg">
+              <IconBox variant="primary-soft" size="sm" className="mb-4">
+                <Wallet className="size-5" />
+              </IconBox>
+              <h2 className="text-title-sm text-[var(--foreground)] mb-1">
+                {creatingNew ? "添加新钱包" : "创建新钱包"}
+              </h2>
+              <p className="text-body-sm text-[var(--muted-foreground)] mb-6">
+                使用 Token Core 生成安全的 HD 钱包
+              </p>
+
+              <div className="space-y-4">
+                <Input
+                  label="钱包密码"
+                  type={showPw ? "text" : "password"}
+                  placeholder="至少6位字符"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  rightIcon={
+                    <button onClick={() => setShowPw(!showPw)}>
+                      {showPw ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  }
+                />
+
+                <div>
+                  <p className="text-sm font-medium text-[var(--foreground)] mb-2">选择链</p>
+                  <div className="flex flex-wrap gap-2">
+                    {CHAIN_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.chain}
+                        onClick={() => toggleChain(opt.chain)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                          selectedChains.has(opt.chain)
+                            ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                            : "bg-[var(--secondary)] text-[var(--foreground)]"
+                        }`}
                       >
-                        {selectedAccount?.address === acct.address ? "当前" : "可选"}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-xs font-mono text-[var(--foreground)] break-all">
-                      {acct.address}
-                    </p>
-                  </CardContent>
-                  <CardFooter>
+                        {opt.icon} {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <Button size="lg" className="w-full" onClick={handleCreate} loading={loading}>
+                  <Plus className="size-4" />
+                  创建钱包
+                </Button>
+              </div>
+            </SectionPanel>
+          )}
+
+          {!generatedMnemonic && (view === "import") && (
+            <SectionPanel padding="lg" className="max-w-lg">
+              <IconBox variant="primary-soft" size="sm" className="mb-4">
+                <Download className="size-5" />
+              </IconBox>
+              <h2 className="text-title-sm text-[var(--foreground)] mb-1">
+                {creatingNew ? "导入另一个钱包" : "导入钱包"}
+              </h2>
+              <p className="text-body-sm text-[var(--muted-foreground)] mb-6">
+                使用已有的助记词恢复钱包
+              </p>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-[var(--foreground)]">助记词</label>
+                  <textarea
+                    className="mt-1.5 h-24 w-full rounded-md border border-[var(--border)] bg-[var(--input-background)] px-4 py-3 text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:border-[var(--ring)] focus:outline-none focus:ring-3 focus:ring-[var(--ring)]/50 resize-none"
+                    placeholder="输入12或24个助记词，用空格分隔"
+                    value={mnemonicInput}
+                    onChange={(e) => setMnemonicInput(e.target.value)}
+                  />
+                </div>
+
+                <Input
+                  label="钱包密码"
+                  type={showPw ? "text" : "password"}
+                  placeholder="至少6位字符"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  rightIcon={
+                    <button onClick={() => setShowPw(!showPw)}>
+                      {showPw ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  }
+                />
+
+                <div>
+                  <p className="text-sm font-medium text-[var(--foreground)] mb-2">选择链</p>
+                  <div className="flex flex-wrap gap-2">
+                    {CHAIN_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.chain}
+                        onClick={() => toggleChain(opt.chain)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                          selectedChains.has(opt.chain)
+                            ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                            : "bg-[var(--secondary)] text-[var(--foreground)]"
+                        }`}
+                      >
+                        {opt.icon} {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <Button size="lg" className="w-full" onClick={handleImport} loading={loading}>
+                  <Download className="size-4" />
+                  导入钱包
+                </Button>
+              </div>
+            </SectionPanel>
+          )}
+
+          {/* Backup mnemonic after create/import */}
+          {generatedMnemonic && (view === "create" || view === "import") && (
+            <SectionPanel padding="lg" className="max-w-lg border-[var(--warning)]">
+              <div className="flex items-start gap-3">
+                <Shield className="size-5 text-[var(--warning)] shrink-0 mt-0.5" />
+                <div className="w-full">
+                  <h3 className="text-sm font-semibold text-[var(--foreground)]">备份助记词</h3>
+                  <p className="text-xs text-[var(--muted-foreground)] mt-1 mb-3">
+                    请安全保存以下助记词。不要分享给任何人。
+                  </p>
+                  <div className="bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
+                    {generatedMnemonic}
+                  </div>
+                  <div className="flex gap-2 mt-3">
                     <Button
                       size="sm"
-                      variant="ghost"
-                      className="w-full"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigator.clipboard.writeText(acct.address);
-                        toast({ title: "地址已复制", variant: "success" });
+                      variant="outline"
+                      onClick={() => {
+                        navigator.clipboard.writeText(generatedMnemonic);
+                        toast({ title: "已复制", variant: "success" });
                       }}
                     >
                       <Copy className="size-3.5" />
-                      复制地址
+                      复制
                     </Button>
-                  </CardFooter>
-                </Card>
-              ))}
-            </div>
-          </div>
-
-          {/* Reveal Mnemonic */}
-          <SectionPanel padding="lg" className="max-w-lg">
-            <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">
-              查看助记词
-            </h3>
-            <p className="text-2xs text-[var(--muted-foreground)] mb-3">
-              需要助记词才能恢复钱包。切勿向任何人透露你的助记词。
-            </p>
-            <div className="flex gap-3">
-              <Input
-                type="password"
-                placeholder="输入钱包密码"
-                value={unlockPw}
-                onChange={(e) => {
-                  setUnlockPw(e.target.value);
-                  setUnlockError("");
-                }}
-                error={unlockError}
-                className="flex-1"
-              />
-              <Button onClick={handleRevealMnemonic}>
-                <Eye className="size-4" />
-                查看
-              </Button>
-            </div>
-            {revealedMnemonic && (
-              <div className="mt-4 bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
-                {revealedMnemonic}
+                    <Button size="sm" onClick={() => {
+                      setGeneratedMnemonic("");
+                      setCreatingNew(false);
+                      setView("manage");
+                    }}>
+                      已安全保存
+                      <ArrowRight className="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
               </div>
-            )}
-          </SectionPanel>
-
-          <div className="flex justify-end">
-            <Button onClick={() => router.push("/products")}>
-              去购物
-              <ArrowRight className="size-4" />
-            </Button>
-          </div>
+            </SectionPanel>
+          )}
         </>
+      )}
+
+      {/* Wallet list (manage view) */}
+      {view === "manage" && wallets.length > 0 && !creatingNew && (
+        <div className="space-y-6">
+          {wallets.map((wallet) => {
+            const isActive = wallet.id === useWalletStore.getState().activeWalletId;
+            return (
+              <SectionPanel key={wallet.id} padding="lg">
+                {/* Wallet header */}
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <IconBox variant={isActive ? "primary" : "primary-soft"} size="sm">
+                      <Wallet className="size-5" />
+                    </IconBox>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-title-sm text-[var(--foreground)]">
+                          {wallet.name}
+                        </h2>
+                        {isActive ? (
+                          <Badge variant="success" size="sm">
+                            <Check className="size-3" />
+                            当前
+                          </Badge>
+                        ) : (
+                          <Badge variant="neutral" size="sm">未激活</Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        {wallet.accounts.length} 个账户 · 创建于{" "}
+                        {new Date(wallet.createdAt).toLocaleDateString("zh-CN")}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    {!isActive && (
+                      <Button variant="primary" size="sm" onClick={() => handleSwitchWallet(wallet.id)}>
+                        切换至此钱包
+                      </Button>
+                    )}
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleRemoveWallet(wallet.id)}
+                    >
+                      <Trash2 className="size-3.5" />
+                      删除
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Accounts for active wallet */}
+                {isActive && (
+                  <div>
+                    <h3 className="text-title-sm text-[var(--foreground)] mb-4">
+                      我的账户
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {wallet.accounts.map((acct, i) => (
+                        <Card
+                          key={i}
+                          className={`cursor-pointer transition-shadow ${
+                            selectedAccount?.address === acct.address
+                              ? "ring-2 ring-[var(--primary)]"
+                              : ""
+                          }`}
+                          onClick={() => selectAccount(acct)}
+                        >
+                          <CardHeader>
+                            <div className="flex items-center gap-3">
+                              <Avatar
+                                size="sm"
+                                fallback={acct.chain.slice(0, 2)}
+                                bgColor="var(--surface-blue-dim)"
+                              />
+                              <div className="flex-1">
+                                <CardTitle>{acct.chain}</CardTitle>
+                                <CardDescription>{acct.derivationPath}</CardDescription>
+                              </div>
+                              <Badge
+                                variant={
+                                  selectedAccount?.address === acct.address ? "primary" : "neutral"
+                                }
+                                size="sm"
+                              >
+                                {selectedAccount?.address === acct.address ? "当前" : "可选"}
+                              </Badge>
+                            </div>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-xs font-mono text-[var(--foreground)] break-all">
+                              {acct.address}
+                            </p>
+                          </CardContent>
+                          <CardFooter>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="w-full"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard.writeText(acct.address);
+                                toast({ title: "地址已复制", variant: "success" });
+                              }}
+                            >
+                              <Copy className="size-3.5" />
+                              复制地址
+                            </Button>
+                          </CardFooter>
+                        </Card>
+                      ))}
+                    </div>
+
+                    {/* Reveal mnemonic for active wallet */}
+                    <SectionPanel padding="md" className="max-w-lg mt-4">
+                      <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">
+                        查看助记词
+                      </h3>
+                      <p className="text-2xs text-[var(--muted-foreground)] mb-3">
+                        需要密码才能查看。切勿向任何人透露你的助记词。
+                      </p>
+                      <div className="flex gap-3">
+                        <Input
+                          type="password"
+                          placeholder="输入钱包密码"
+                          value={unlockPw}
+                          onChange={(e) => {
+                            setUnlockPw(e.target.value);
+                            setUnlockError("");
+                          }}
+                          error={unlockError}
+                          className="flex-1"
+                        />
+                        <Button onClick={handleRevealMnemonic}>
+                          <Eye className="size-4" />
+                          查看
+                        </Button>
+                      </div>
+                      {revealedMnemonic && (
+                        <div className="mt-4 bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
+                          {revealedMnemonic}
+                        </div>
+                      )}
+                    </SectionPanel>
+                  </div>
+                )}
+              </SectionPanel>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Bottom actions */}
+      {wallets.length > 0 && view === "manage" && !creatingNew && (
+        <div className="flex justify-between">
+          <Button variant="outline" onClick={() => { resetForm(); setCreatingNew(true); setView("create"); }}>
+            <Plus className="size-3.5" />
+            添加钱包
+          </Button>
+          <Button onClick={() => router.push("/products")}>
+            去购物
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
       )}
     </div>
   );

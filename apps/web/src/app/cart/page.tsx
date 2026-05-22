@@ -68,6 +68,11 @@ export default function CartPage() {
       return;
     }
 
+    if (!isBalancePayment && !selectedAccount) {
+      toast({ title: "请先连接钱包", description: "加密货币支付需要先连接钱包", variant: "warning" });
+      return;
+    }
+
     const needsPhone = items.some((item) => item.product.recipientType === "phone_number");
     if (needsPhone && !phone.trim()) {
       toast({ title: "请输入接收手机号", description: "话费充值商品需要填写手机号码", variant: "warning" });
