@@ -23,14 +23,16 @@ import {
   getBitrefillClient,
   formatCurrency,
   PAYMENT_METHODS,
+  getDefaultPaymentMethod,
 } from "@/lib/bitrefill";
+import { addOrderToWallet } from "@/lib/db";
 
 export default function CartPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { items, removeItem, clearCart } = useCartStore();
   const { addOrder } = useOrderStore();
-  const { selectedAccount } = useWalletStore();
+  const { selectedAccount, activeWalletId } = useWalletStore();
 
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [email, setEmail] = useState("");
@@ -54,10 +56,9 @@ export default function CartPage() {
       .finally(() => setLoadingBalance(false));
   }, [paymentMethod]);
 
-  const chainPaymentMethod =
-    selectedAccount && PAYMENT_METHODS[selectedAccount.chain]
-      ? PAYMENT_METHODS[selectedAccount.chain]
-      : "ethereum";
+  const chainPaymentMethod = selectedAccount
+    ? getDefaultPaymentMethod(selectedAccount.chain)
+    : "ethereum";
 
   const isBalancePayment = paymentMethod === "balance";
   const isCryptoPayment = !isBalancePayment;
@@ -99,6 +100,9 @@ export default function CartPage() {
           autoPay: isBalancePayment,
         });
         addOrder(invoice);
+        if (activeWalletId) {
+          addOrderToWallet(activeWalletId, invoice.id).catch(() => {});
+        }
         createdCount++;
       } catch (e: any) {
         toast({
@@ -255,10 +259,10 @@ export default function CartPage() {
               <option value="balance">Bitrefill 余额 (即时到账)</option>
               {Object.entries(PAYMENT_METHODS)
                 .filter(([, m]) => m !== "balance")
-                .map(([chain, method]) => (
-                  <option key={chain} value={method}>
-                    {chain === selectedAccount?.chain ? "⭐ " : ""}
-                    {chain} ({method})
+                .map(([label, method]) => (
+                  <option key={label} value={method}>
+                    {method === chainPaymentMethod ? "⭐ " : ""}
+                    {label.replace(/_/g, " ")}
                   </option>
                 ))}
             </select>

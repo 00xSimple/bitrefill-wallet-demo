@@ -94,7 +94,25 @@ export interface BitrefillCategory {
 
 export const PAYMENT_METHODS: Record<string, string> = {
   BALANCE: "balance",
+  // ETH / EVM native
   ETHEREUM: "ethereum",
+  ETH_BASE: "eth_base",
+  ETH_ARBITRUM: "eth_arbitrum",
+  // USDT
+  USDT_TRC20: "usdt_trc20",
+  USDT_ERC20: "usdt_erc20",
+  USDT_POLYGON: "usdt_polygon",
+  USDT_SOLANA: "usdt_solana",
+  USDT_BSC: "usdt_bsc",
+  USDT_ARBITRUM: "usdt_arbitrum",
+  // USDC
+  USDC_ERC20: "usdc_erc20",
+  USDC_POLYGON: "usdc_polygon",
+  USDC_SOLANA: "usdc_solana",
+  USDC_BASE: "usdc_base",
+  USDC_BSC: "usdc_bsc",
+  USDC_ARBITRUM: "usdc_arbitrum",
+  // Other chains
   TRON: "tron",
   BITCOIN: "bitcoin",
   LITECOIN: "litecoin",
@@ -102,6 +120,26 @@ export const PAYMENT_METHODS: Record<string, string> = {
 };
 
 export type BitrefillPaymentMethod = keyof typeof PAYMENT_METHODS;
+
+/** Maps a wallet chain type to the default Bitrefill payment method. */
+export function getDefaultPaymentMethod(chain: string): string {
+  const defaults: Record<string, string> = {
+    ETHEREUM: "ethereum",
+    TRON: "tron",
+    BITCOIN: "bitcoin",
+    LITECOIN: "litecoin",
+    DOGECOIN: "dogecoin",
+    BITCOINCASH: "bitcoin",
+    COSMOS: "ethereum",
+    EOS: "ethereum",
+    TEZOS: "ethereum",
+    TON: "ethereum",
+    NERVOS: "ethereum",
+    POLKADOT: "ethereum",
+    KUSAMA: "ethereum",
+  };
+  return defaults[chain] ?? "ethereum";
+}
 
 const CRYPTO_DECIMALS: Record<string, number> = {
   BTC: 8,
@@ -348,11 +386,15 @@ class BitrefillClient {
     status?: string;
     limit?: number;
     start?: number;
+    after?: string;
+    before?: string;
   }): Promise<{ invoices: BitrefillInvoice[]; total: number }> {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.start != null) qs.set("start", String(params.start));
+    if (params?.after) qs.set("after", params.after);
+    if (params?.before) qs.set("before", params.before);
     const query = qs.toString();
     const result = await this.request<any>(`/invoices${query ? `?${query}` : ""}`);
     const raw = Array.isArray(result.data) ? result.data : Array.isArray(result.invoices) ? result.invoices : [];

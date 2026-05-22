@@ -11,7 +11,9 @@ export function WalletHydrator({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (done.current) return;
     done.current = true;
-    hydrateFromDB();
+    hydrateFromDB().then(() => {
+      useWalletStore.getState().checkBrowserWallet();
+    });
   }, []);
 
   return <>{children}</>;

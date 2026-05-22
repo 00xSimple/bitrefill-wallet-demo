@@ -29,6 +29,8 @@ import {
   AlertTriangle,
   Loader2,
   Check,
+  Unplug,
+  Globe,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -79,6 +81,8 @@ export default function WalletPage() {
     switchWallet,
     removeWallet,
     hydrateFromDB,
+    connectBrowserWallet,
+    checkBrowserWallet,
   } = useWalletStore();
 
   const [view, setView] = useState<"manage" | "create" | "import">("manage");
@@ -95,10 +99,15 @@ export default function WalletPage() {
   );
   const [checkingWasm, setCheckingWasm] = useState(true);
   const [creatingNew, setCreatingNew] = useState(false);
+  const [browserConnecting, setBrowserConnecting] = useState(false);
+  const hasBrowserWallet = wallets.some((w) => w.type === "browser");
 
   useEffect(() => {
     (async () => {
-      await hydrateFromDB();
+      const store = useWalletStore.getState();
+      if (!store.hydrated) {
+        await hydrateFromDB();
+      }
       const available = await isWalletAvailable();
       setWasmAvailable(available);
       setCheckingWasm(false);
@@ -106,6 +115,11 @@ export default function WalletPage() {
       const state = useWalletStore.getState();
       if (state.wallets.length === 0) {
         setView("create");
+      }
+
+      // Auto-restore browser wallet if not already connected
+      if (!state.wallets.some((w) => w.type === "browser")) {
+        await checkBrowserWallet();
       }
     })();
   }, []);
@@ -147,6 +161,7 @@ export default function WalletPage() {
       const record: WalletRecord = {
         id: crypto.randomUUID(),
         name,
+        type: "keystore",
         keystore: ks,
         mnemonic,
         accounts: accts,
@@ -202,6 +217,7 @@ export default function WalletPage() {
       const record: WalletRecord = {
         id: crypto.randomUUID(),
         name,
+        type: "keystore",
         keystore: ks,
         mnemonic: mnemonicInput.trim(),
         accounts: accts,
@@ -256,6 +272,26 @@ export default function WalletPage() {
     } catch {
       setUnlockError("密码错误或无法解密");
     }
+  };
+
+  // ---- Connect browser wallet ----
+  const handleConnectBrowser = async () => {
+    setBrowserConnecting(true);
+    try {
+      await connectBrowserWallet();
+      toast({ title: "浏览器钱包已连接", variant: "success" });
+    } catch (e: any) {
+      toast({ title: "连接失败", description: e.message, variant: "error" });
+    } finally {
+      setBrowserConnecting(false);
+    }
+  };
+
+  // ---- Disconnect browser wallet ----
+  const handleDisconnectBrowser = () => {
+    const store = useWalletStore.getState();
+    store.disconnectBrowserWallet();
+    toast({ title: "浏览器钱包已断开", variant: "info" });
   };
 
   // ---- Disconnect all ----
@@ -551,10 +587,37 @@ export default function WalletPage() {
         </>
       )}
 
+      {/* Browser wallet connect card (no browser wallet connected yet) */}
+      {view === "manage" && !hasBrowserWallet && !creatingNew && (
+        <SectionPanel padding="lg" className="max-w-lg border-dashed border-[var(--border)]">
+          <div className="flex items-center gap-4">
+            <IconBox variant="primary-soft" size="sm">
+              <Globe className="size-5" />
+            </IconBox>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-[var(--foreground)]">连接浏览器钱包</h3>
+              <p className="text-xs text-[var(--muted-foreground)] mt-1">
+                通过 MetaMask 等浏览器插件连接钱包地址
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleConnectBrowser}
+              loading={browserConnecting}
+            >
+              <Unplug className="size-3.5" />
+              连接
+            </Button>
+          </div>
+        </SectionPanel>
+      )}
+
       {/* Wallet list (manage view) */}
       {view === "manage" && wallets.length > 0 && !creatingNew && (
         <div className="space-y-6">
           {wallets.map((wallet) => {
+            const isBrowser = wallet.type === "browser";
             const isActive = wallet.id === useWalletStore.getState().activeWalletId;
             return (
               <SectionPanel key={wallet.id} padding="lg">
@@ -562,13 +625,16 @@ export default function WalletPage() {
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-3">
                     <IconBox variant={isActive ? "primary" : "primary-soft"} size="sm">
-                      <Wallet className="size-5" />
+                      {isBrowser ? <Globe className="size-5" /> : <Wallet className="size-5" />}
                     </IconBox>
                     <div>
                       <div className="flex items-center gap-2">
                         <h2 className="text-title-sm text-[var(--foreground)]">
                           {wallet.name}
                         </h2>
+                        {isBrowser && (
+                          <Badge variant="primary" size="sm">浏览器</Badge>
+                        )}
                         {isActive ? (
                           <Badge variant="success" size="sm">
                             <Check className="size-3" />
@@ -579,8 +645,8 @@ export default function WalletPage() {
                         )}
                       </div>
                       <p className="text-xs text-[var(--muted-foreground)]">
-                        {wallet.accounts.length} 个账户 · 创建于{" "}
-                        {new Date(wallet.createdAt).toLocaleDateString("zh-CN")}
+                        {wallet.accounts.length} 个账户
+                        {!isBrowser && <> · 创建于 {new Date(wallet.createdAt).toLocaleDateString("zh-CN")}</>}
                       </p>
                     </div>
                   </div>
@@ -590,14 +656,25 @@ export default function WalletPage() {
                         切换至此钱包
                       </Button>
                     )}
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => handleRemoveWallet(wallet.id)}
-                    >
-                      <Trash2 className="size-3.5" />
-                      删除
-                    </Button>
+                    {isBrowser ? (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={handleDisconnectBrowser}
+                      >
+                        <Unplug className="size-3.5" />
+                        断开连接
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleRemoveWallet(wallet.id)}
+                      >
+                        <Trash2 className="size-3.5" />
+                        删除
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -663,37 +740,39 @@ export default function WalletPage() {
                       ))}
                     </div>
 
-                    {/* Reveal mnemonic for active wallet */}
-                    <SectionPanel padding="md" className="max-w-lg mt-4">
-                      <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">
-                        查看助记词
-                      </h3>
-                      <p className="text-2xs text-[var(--muted-foreground)] mb-3">
-                        需要密码才能查看。切勿向任何人透露你的助记词。
-                      </p>
-                      <div className="flex gap-3">
-                        <Input
-                          type="password"
-                          placeholder="输入钱包密码"
-                          value={unlockPw}
-                          onChange={(e) => {
-                            setUnlockPw(e.target.value);
-                            setUnlockError("");
-                          }}
-                          error={unlockError}
-                          className="flex-1"
-                        />
-                        <Button onClick={handleRevealMnemonic}>
-                          <Eye className="size-4" />
-                          查看
-                        </Button>
-                      </div>
-                      {revealedMnemonic && (
-                        <div className="mt-4 bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
-                          {revealedMnemonic}
+                    {/* Reveal mnemonic for active wallet (keystore wallets only) */}
+                    {!isBrowser && (
+                      <SectionPanel padding="md" className="max-w-lg mt-4">
+                        <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">
+                          查看助记词
+                        </h3>
+                        <p className="text-2xs text-[var(--muted-foreground)] mb-3">
+                          需要密码才能查看。切勿向任何人透露你的助记词。
+                        </p>
+                        <div className="flex gap-3">
+                          <Input
+                            type="password"
+                            placeholder="输入钱包密码"
+                            value={unlockPw}
+                            onChange={(e) => {
+                              setUnlockPw(e.target.value);
+                              setUnlockError("");
+                            }}
+                            error={unlockError}
+                            className="flex-1"
+                          />
+                          <Button onClick={handleRevealMnemonic}>
+                            <Eye className="size-4" />
+                            查看
+                          </Button>
                         </div>
-                      )}
-                    </SectionPanel>
+                        {revealedMnemonic && (
+                          <div className="mt-4 bg-[var(--surface-blue)] rounded-lg p-3 font-mono text-sm text-[var(--foreground)] break-words select-all">
+                            {revealedMnemonic}
+                          </div>
+                        )}
+                      </SectionPanel>
+                    )}
                   </div>
                 )}
               </SectionPanel>

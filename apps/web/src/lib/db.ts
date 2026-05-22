@@ -16,9 +16,12 @@ const DB_NAME = "bitrefill-wallet";
 const DB_VERSION = 1;
 const STORE_NAME = "wallet";
 
+export type WalletType = "keystore" | "browser";
+
 export interface WalletRecord {
   id: string;
   name: string;
+  type: WalletType;
   keystore: string;
   mnemonic: string;
   accounts: Account[];
@@ -96,6 +99,7 @@ async function migrateIfNeeded(): Promise<void> {
   const record: WalletRecord = {
     id,
     name: "钱包 1",
+    type: "keystore",
     keystore: oldKeystore,
     mnemonic: oldMnemonic || "",
     accounts: oldAccounts || [],
@@ -136,7 +140,8 @@ export async function loadWallets(): Promise<WalletRecord[]> {
     const raw = await getFromStore<string>(`wallet:${id}`);
     if (raw) {
       try {
-        records.push(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        records.push({ type: "keystore", ...parsed });
       } catch { /* corrupt entry */ }
     }
   }
@@ -192,6 +197,7 @@ export async function clearAllWallets(): Promise<void> {
   await withStore("readwrite", (store) => {
     for (const id of ids) {
       store.delete(`wallet:${id}`);
+      store.delete(`wallet_orders:${id}`);
     }
     store.delete("wallet_ids");
     store.delete("active_wallet_id");
@@ -205,4 +211,29 @@ export async function clearAllWallets(): Promise<void> {
 
 export async function isDatabaseAvailable(): Promise<boolean> {
   return typeof indexedDB !== "undefined";
+}
+
+// ---- Order-to-wallet mapping ----
+
+export async function addOrderToWallet(walletId: string, invoiceId: string): Promise<void> {
+  if (!indexedDB) return;
+  const ids = (await getJSONFromStore<string[]>(`wallet_orders:${walletId}`)) || [];
+  if (!ids.includes(invoiceId)) {
+    ids.push(invoiceId);
+    await withStore("readwrite", (store) => {
+      store.put(JSON.stringify(ids), `wallet_orders:${walletId}`);
+    });
+  }
+}
+
+export async function getWalletOrderIds(walletId: string): Promise<Set<string>> {
+  const ids = await getJSONFromStore<string[]>(`wallet_orders:${walletId}`);
+  return new Set(ids || []);
+}
+
+export async function deleteWalletOrders(walletId: string): Promise<void> {
+  if (!indexedDB) return;
+  await withStore("readwrite", (store) => {
+    store.delete(`wallet_orders:${walletId}`);
+  });
 }

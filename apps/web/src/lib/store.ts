@@ -5,6 +5,7 @@ import {
   saveWallet,
   loadWallets,
   deleteWallet,
+  deleteWalletOrders,
   setActiveWalletId,
   getActiveWalletId,
   addWalletToList,
@@ -12,6 +13,13 @@ import {
   isDatabaseAvailable,
   type WalletRecord,
 } from "./db";
+import {
+  connectBrowserWallet,
+  getConnectedAccounts,
+  listenBrowserWallet,
+  browserAccountToWalletAccount,
+  isBrowserWalletAvailable,
+} from "./browserWallet";
 
 // ---- Wallet State ----
 
@@ -43,6 +51,11 @@ export interface WalletState {
   switchWallet: (id: string) => void;
   removeWallet: (id: string) => void;
 
+  // Browser wallet
+  connectBrowserWallet: () => Promise<void>;
+  disconnectBrowserWallet: () => void;
+  checkBrowserWallet: () => Promise<void>;
+
   hydrateFromDB: () => Promise<void>;
 }
 
@@ -70,6 +83,8 @@ function pickActiveWallet(wallets: WalletRecord[], id: string | null) {
   };
 }
 
+let hydratePromise: Promise<void> | null = null;
+
 export const useWalletStore = create<WalletState>()((set, get) => ({
   wallets: [],
   activeWalletId: null,
@@ -86,7 +101,7 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
   setKeystore: (json) => {
     const { wallets, activeWalletId } = get();
     const idx = wallets.findIndex((w) => w.id === activeWalletId);
-    if (idx >= 0) {
+    if (idx >= 0 && wallets[idx]!.type !== "browser") {
       const updated = [...wallets];
       updated[idx] = { ...updated[idx]!, keystore: json };
       set({ wallets: updated, keystoreJson: json });
@@ -97,7 +112,7 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
   setMnemonic: (mnemonic) => {
     const { wallets, activeWalletId } = get();
     const idx = wallets.findIndex((w) => w.id === activeWalletId);
-    if (idx >= 0) {
+    if (idx >= 0 && wallets[idx]!.type !== "browser") {
       const updated = [...wallets];
       updated[idx] = { ...updated[idx]!, mnemonic };
       set({ wallets: updated, mnemonic });
@@ -113,7 +128,9 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
       const sel = accounts[0] ?? null;
       updated[idx] = { ...updated[idx]!, accounts, selectedAccountId: sel?.address ?? null };
       set({ wallets: updated, accounts, selectedAccount: sel });
-      saveWallet(updated[idx]!).catch(() => {});
+      if (updated[idx]!.type !== "browser") {
+        saveWallet(updated[idx]!).catch(() => {});
+      }
     }
   },
 
@@ -124,7 +141,9 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
       const updated = [...wallets];
       updated[idx] = { ...updated[idx]!, selectedAccountId: account?.address ?? null };
       set({ wallets: updated, selectedAccount: account });
-      saveWallet(updated[idx]!).catch(() => {});
+      if (updated[idx]!.type !== "browser") {
+        saveWallet(updated[idx]!).catch(() => {});
+      }
     }
   },
 
@@ -154,9 +173,12 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
     const derived = pickActiveWallet(updated, record.id);
     set({ wallets: updated, ...derived });
 
-    saveWallet(record).catch(() => {});
-    addWalletToList(record.id).catch(() => {});
-    setActiveWalletId(record.id).catch(() => {});
+    // Browser wallets are session-only — not persisted to IndexedDB
+    if (record.type !== "browser") {
+      saveWallet(record).catch(() => {});
+      addWalletToList(record.id).catch(() => {});
+      setActiveWalletId(record.id).catch(() => {});
+    }
   },
 
   switchWallet: (id) => {
@@ -169,36 +191,135 @@ export const useWalletStore = create<WalletState>()((set, get) => ({
 
   removeWallet: (id) => {
     const { wallets } = get();
+    const wallet = wallets.find((w) => w.id === id);
     const next = wallets.filter((w) => w.id !== id);
     const newActiveId = id === get().activeWalletId
       ? next[0]?.id ?? null
       : get().activeWalletId;
     const derived = pickActiveWallet(next, newActiveId);
     set({ wallets: next, ...derived });
-    deleteWallet(id).catch(() => {});
+    if (wallet && wallet.type !== "browser") {
+      deleteWallet(id).catch(() => {});
+      deleteWalletOrders(id).catch(() => {});
+    }
+  },
+
+  // ---- Browser wallet ----
+
+  connectBrowserWallet: async () => {
+    const browserAccounts = await connectBrowserWallet();
+    const id = "browser-" + crypto.randomUUID();
+    const accounts = browserAccounts.map(browserAccountToWalletAccount);
+    const record: WalletRecord = {
+      id,
+      name: "浏览器钱包",
+      type: "browser",
+      keystore: "",
+      mnemonic: "",
+      accounts,
+      selectedAccountId: accounts[0]?.address ?? null,
+      createdAt: Date.now(),
+    };
+
+    const { wallets } = get();
+    // Remove existing browser wallets
+    const filtered = wallets.filter((w) => w.type !== "browser");
+    const updated = [...filtered, record];
+    const derived = pickActiveWallet(updated, record.id);
+    set({ wallets: updated, ...derived, isLocked: false });
+
+    // Listen for account/chain changes
+    listenBrowserWallet(
+      (newAccounts) => {
+        if (newAccounts.length === 0) {
+          get().disconnectBrowserWallet();
+          return;
+        }
+        const accts = newAccounts.map(browserAccountToWalletAccount);
+        const st = get();
+        const idx = st.wallets.findIndex((w) => w.id === id);
+        if (idx >= 0) {
+          const upd = [...st.wallets];
+          upd[idx] = { ...upd[idx]!, accounts: accts, selectedAccountId: accts[0]?.address ?? null };
+          set({ wallets: upd, accounts: accts, selectedAccount: accts[0] ?? null });
+        }
+      },
+      () => {
+        // chain changed — accounts remain same, no action needed
+      }
+    );
+  },
+
+  disconnectBrowserWallet: () => {
+    const { wallets, activeWalletId } = get();
+    const browserWallet = wallets.find((w) => w.id === activeWalletId && w.type === "browser");
+    const next = wallets.filter((w) => w.type !== "browser");
+    const newActiveId = browserWallet ? next[0]?.id ?? null : activeWalletId;
+    const derived = pickActiveWallet(next, newActiveId);
+    set({ wallets: next, ...derived });
+    useOrderStore.getState().setOrders([]);
+  },
+
+  checkBrowserWallet: async () => {
+    if (!isBrowserWalletAvailable()) return;
+    const existing = get().wallets.some((w) => w.type === "browser");
+    if (existing) return;
+    try {
+      const browserAccounts = await getConnectedAccounts();
+      if (browserAccounts.length === 0) return;
+
+      const id = "browser-" + crypto.randomUUID();
+      const accounts = browserAccounts.map(browserAccountToWalletAccount);
+      const record: WalletRecord = {
+        id,
+        name: "浏览器钱包",
+        type: "browser",
+        keystore: "",
+        mnemonic: "",
+        accounts,
+        selectedAccountId: accounts[0]?.address ?? null,
+        createdAt: Date.now(),
+      };
+      const { wallets } = get();
+      const updated = [...wallets, record];
+      set({ wallets: updated, ...pickActiveWallet(updated, record.id), isLocked: false });
+    } catch {
+      // not connected
+    }
   },
 
   // ---- Hydrate ----
 
   hydrateFromDB: async () => {
-    try {
-      const available = await isDatabaseAvailable();
-      if (!available) {
+    // Skip if already hydrated to avoid overwriting in-memory browser wallets
+    if (get().hydrated) return;
+    if (hydratePromise) return hydratePromise;
+
+    hydratePromise = (async () => {
+      try {
+        const available = await isDatabaseAvailable();
+        if (!available) {
+          set({ hydrated: true });
+          return;
+        }
+        const idbWallets = await loadWallets();
+        const activeId = await getActiveWalletId();
+        // Preserve any existing in-memory browser wallets
+        const browserWallets = get().wallets.filter((w) => w.type === "browser");
+        const merged = [...idbWallets, ...browserWallets];
+        const derived = pickActiveWallet(merged, activeId);
+        set({
+          wallets: merged,
+          ...derived,
+          isLocked: true,
+          hydrated: true,
+        });
+      } catch {
         set({ hydrated: true });
-        return;
       }
-      const wallets = await loadWallets();
-      const activeId = await getActiveWalletId();
-      const derived = pickActiveWallet(wallets, activeId);
-      set({
-        wallets,
-        ...derived,
-        isLocked: true,
-        hydrated: true,
-      });
-    } catch {
-      set({ hydrated: true });
-    }
+    })();
+
+    return hydratePromise;
   },
 }));
 

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
   Card,
   CardHeader,
@@ -26,6 +26,9 @@ import {
   RefreshCw,
   AlertTriangle,
   Gift,
+  ChevronLeft,
+  ChevronRight,
+  Calendar,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useOrderStore, useWalletStore } from "@/lib/store";
@@ -34,6 +37,7 @@ import {
   formatCurrency,
   type BitrefillInvoice,
 } from "@/lib/bitrefill";
+import { getWalletOrderIds } from "@/lib/db";
 import { PaymentPanel } from "@/components/PaymentPanel";
 import { SendPaymentDialog } from "@/components/SendPaymentDialog";
 
@@ -62,21 +66,32 @@ export default function OrdersPage() {
   const router = useRouter();
   const { toast } = useToast();
   const { orders, addOrder, updateOrder, setOrders } = useOrderStore();
-  const { selectedAccount, keystoreJson } = useWalletStore();
+  const { selectedAccount, keystoreJson, activeWalletId } = useWalletStore();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [creatingInvoice, setCreatingInvoice] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [sendDialogInvoice, setSendDialogInvoice] = useState<BitrefillInvoice | null>(null);
+  const [walletOrderIds, setWalletOrderIds] = useState<Set<string>>(new Set());
 
-  // Fetch invoices from API on mount, then fetch redemption codes
+  // Date range — default to today
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(todayStr);
+
+  // Fetch invoices from API
   const loadFromApi = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     const client = getBitrefillClient();
     try {
-      const result = await client.listInvoices({ limit: 100 });
+      const after = `${date} 00:00:00`;
+      // before is non-inclusive, so use next day
+      const nextDay = new Date(date);
+      nextDay.setDate(nextDay.getDate() + 1);
+      const before = `${nextDay.toISOString().slice(0, 10)} 00:00:00`;
+
+      const result = await client.listInvoices({ limit: 100, after, before });
       setOrders(result.invoices);
 
       // Fetch redemption codes for completed invoices that lack them
@@ -107,7 +122,16 @@ export default function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [setOrders, updateOrder]);
+  }, [setOrders, updateOrder, date]);
+
+  // Load wallet order IDs when active wallet changes
+  useEffect(() => {
+    if (activeWalletId) {
+      getWalletOrderIds(activeWalletId).then(setWalletOrderIds);
+    } else {
+      setWalletOrderIds(new Set());
+    }
+  }, [activeWalletId]);
 
   useEffect(() => {
     if (!keystoreJson) {
@@ -116,7 +140,7 @@ export default function OrdersPage() {
       return;
     }
     loadFromApi();
-  }, [keystoreJson]);
+  }, [keystoreJson, date]);
 
   // Refresh single invoice status
   const handleRefreshInvoice = useCallback(
@@ -228,8 +252,14 @@ export default function OrdersPage() {
   const hasPaymentAddress = (o: BitrefillInvoice) =>
     o.paymentAddress && o.paymentMethod !== "balance" && o.paymentStatus === "unpaid";
 
-  const pendingOrders = orders.filter((o) => o.status === "not_delivered");
-  const completedOrders = orders.filter((o) => isFinishedStatus(o.status));
+  // Filter orders by wallet ID mapping
+  const filteredOrders = useMemo(() => {
+    if (walletOrderIds.size === 0) return [];
+    return orders.filter((o) => walletOrderIds.has(o.id));
+  }, [orders, walletOrderIds]);
+
+  const pendingOrders = filteredOrders.filter((o) => o.status === "not_delivered");
+  const completedOrders = filteredOrders.filter((o) => isFinishedStatus(o.status));
 
   return (
     <div className="page-enter space-y-6">
@@ -254,6 +284,49 @@ export default function OrdersPage() {
             继续购物
           </Button>
         </div>
+      </div>
+
+      {/* Date navigation */}
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            const d = new Date(date);
+            d.setDate(d.getDate() - 1);
+            setDate(d.toISOString().slice(0, 10));
+          }}
+        >
+          <ChevronLeft className="size-4" />
+        </Button>
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[var(--surface-page)] border border-[var(--border)]">
+          <Calendar className="size-3.5 text-[var(--muted-foreground)]" />
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="text-sm bg-transparent text-[var(--foreground)] focus:outline-none"
+          />
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            const d = new Date(date);
+            d.setDate(d.getDate() + 1);
+            setDate(d.toISOString().slice(0, 10));
+          }}
+        >
+          <ChevronRight className="size-4" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setDate(todayStr)}
+          disabled={date === todayStr}
+        >
+          今天
+        </Button>
       </div>
 
       {/* Loading state */}
@@ -287,7 +360,7 @@ export default function OrdersPage() {
       )}
 
       {/* Empty state */}
-      {!loading && !loadError && orders.length === 0 && (
+      {!loading && !loadError && filteredOrders.length === 0 && (
         <SectionPanel padding="xl" className="text-center">
           <Receipt className="size-12 text-[var(--muted-foreground)] mx-auto mb-4" />
           <p className="text-body-lg font-semibold text-[var(--foreground)]">暂无订单</p>
